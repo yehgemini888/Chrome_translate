@@ -1,0 +1,83 @@
+/* Chrome Translate — Injected Styles */
+
+/* === Floating Button === */
+.ct-float-btn {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background: #4A90D9;
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  z-index: 2147483647;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: background 0.2s, transform 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.ct-float-btn:hover {
+  transform: scale(1.1);
+}
+
+.ct-float-btn.translating {
+  background: #F5A623;
+  animation: ct-spin 1s linear infinite;
+}
+
+.ct-float-btn.done {
+  background: #7ED321;
+}
+
+.ct-float-btn.error {
+  background: #D0021B;
+}
+
+@keyframes ct-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* === Bilingual Translation Display === */
+/* Mimics Immersive Translate style: translation right below original, subtle gray */
+.ct-translated {
+  display: block !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  float: none !important;
+  clear: both !important;
+  width: auto !important;
+  position: relative !important;
+  background: transparent !important;
+  color: #999 !important;
+  word-wrap: break-word !important;
+  font-style: normal !important;
+  font-weight: normal !important;
+  text-decoration: none !important;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .ct-translated {
+    color: #888 !important;
+  }
+}
+
+/* === YouTube Dual Subtitles === */
+.ct-yt-translated {
+  display: block;
+  color: #ffcc00;
+  font-size: 0.85em;
+  margin-top: 2px;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+  line-height: 1.4;
+}

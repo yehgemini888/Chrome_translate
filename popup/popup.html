@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chrome Translate</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <div class="header">
+      <h1>Chrome Translate</h1>
+      <p class="subtitle">沉浸式雙語翻譯 (Google Translate)</p>
+    </div>
+
+    <!-- Enable toggle -->
+    <div class="setting-row">
+      <span class="setting-label">啟用翻譯</span>
+      <label class="toggle">
+        <input type="checkbox" id="enableToggle" checked>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <!-- Target Language -->
+    <div class="setting-group">
+      <label class="setting-label" for="targetLang">目標語言</label>
+      <select id="targetLang">
+        <option value="zh-TW">繁體中文</option>
+        <option value="zh-CN">簡體中文</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+        <option value="ko">韓語</option>
+        <option value="de">Deutsch</option>
+        <option value="fr">Français</option>
+        <option value="es">Español</option>
+        <option value="pt">Português</option>
+        <option value="vi">Tiếng Việt</option>
+        <option value="th">ไทย</option>
+      </select>
+    </div>
+
+    <!-- Status -->
+    <div class="setting-group">
+      <div class="status-box">
+        <span class="status-dot active"></span>
+        <span>Google Translate — 免費、無需 API Key</span>
+      </div>
+    </div>
+
+    <!-- Usage hint -->
+    <div class="hint-box">
+      <p><strong>使用方式：</strong></p>
+      <p>🌐 任何網頁 → 點右下角藍色按鈕翻譯</p>
+      <p>🎬 YouTube → 開啟字幕後自動翻譯</p>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <span class="version">v1.1.0 — Google Translate</span>
+    </div>
+  </div>
+
+  <script src="../utils/constants.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
