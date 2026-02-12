@@ -296,6 +296,61 @@ Content script 啟動時檢查 `chrome.runtime.id` 是否有效。翻譯過程�
 
 Content script 啟動時檢查 `chrome.storage.local` 中的目標語言設定。若偵測到舊版 DeepL 格式的語言代碼（`ZH-HANT`, `ZH-HANS`, `ZH`），自動遷移為 Google Translate 格式（`zh-TW`, `zh-CN`）。
 
+### 4.9 Translation Engine V2 — Text Node 級別遍歷
+
+> **變更紀錄：** V1 使用 Element 級別遍歷（`innerText`），導致 HTML tag 被合併翻譯、版面破壞。V2 改為 Text Node 級別遍歷，參考 Immersive Translate 架構。
+
+**核心資料結構 — Piece：**
+
+```javascript
+{
+  isTranslated: false,
+  parentElement: <Element>,  // 段落所屬的最近 block 父元素
+  nodes: [textNode1, ...],   // text node 陣列 (nodeType===3)
+  originalTexts: ['...']     // 翻譯前的原始文字備份
+}
+```
+
+**遍歷演算法 — `extractPieces(root)`：**
+
+```
+getAllNodes(node):
+  1. nodeType===1 (Element) 或 nodeType===11 (Shadow DOM):
+     - 若為 SKIP_TAGS / notranslate / contentEditable → 切割段落，return
+     - 若為 INLINE_IGNORE_TAGS (BR, CODE, KBD) → 切割段落，return
+     - 遍歷 childNodes:
+       - 子節點非 INLINE_TAGS → 切割段落 → 遞迴 → 切割段落
+       - 子節點為 INLINE_TAGS → 直接遞迴（不切割）
+  2. nodeType===3 (Text Node):
+     - textContent.trim() 非空 → 加入當前 piece.nodes[]
+     - 段落字符累計超過 PIECE_MAX_CHARS → 強制切割新段落
+```
+
+**翻譯注入策略：**
+
+```
+翻譯前：備份所有 text nodes 的 textContent → piece.originalTexts[]
+翻譯後：
+  1. 每個 piece 的 text nodes 依 index 寫回翻譯結果
+  2. 在 piece.parentElement 後方插入 <span class="ct-translated"> 翻譯行
+  3. 原文結構 (strong, a, em 等) 完整保留不受影響
+恢復：從 originalTexts[] 恢復 text nodes 的 textContent
+```
+
+**notranslate 標準支援：**
+- `class="notranslate"` — 跳過翻譯
+- `translate="no"` — HTML 標準翻譯控制屬性
+- `contentEditable` — 可編輯區域跳過
+
+### 4.10 動態內容翻譯（MutationObserver）
+
+翻譯完成後啟動 MutationObserver 監聽 DOM 變更：
+- 監聽 `{ childList: true, subtree: true }`
+- 新增的 block 節點加入翻譯佇列
+- 每 2 秒批次處理佇列中的新節點
+- 頁面不可見時（`visibilitychange`）暫停監聽
+- 避免重複翻譯已處理的節點
+
 ## 5. Key Interfaces
 
 ### 5.1 Message Protocol (Content ↔ Background)
@@ -373,6 +428,8 @@ window.postMessage({
 | 8 | **批次策略** | **逐條翻譯 + 5 併發** | 分隔符號合併法不可靠，Google 會改變分隔符號 |
 | 9 | **翻譯元素** | **`<span>` 非 `<div>`** | 減少對表格/列表佈局的影響 |
 | 10 | **事件隔離** | **stopPropagation on button** | 防止宿主頁面 JS 操作 SVG 子元素報錯 |
+| 11 | **DOM 遍歷 V2** | **Text Node 級別遍歷** | Element 級 innerText 會吃 HTML tag；Text Node 級保留 DOM 結構 |
+| 12 | **動態內容** | **MutationObserver + 2s 佇列** | SPA 頁面切換後新內容需要自動翻譯 |
 
 ## 7. Known Issues & Workarounds
 
@@ -388,6 +445,8 @@ window.postMessage({
 | 8 | `<a>` 包裹 `<h3>`+`<p>` 未正確拆分 | 只檢查直接子元素是否為 block | 新增 `_hasBlockDescendant()` 遞迴穿透 inline |
 | 9 | Extension context invalidated | 重新載入擴充功能後舊 content script 失效 | 啟動時檢查 runtime.id + 錯誤提示刷新頁面 |
 | 10 | `postMessage` 垃圾錯誤訊息 | 網站廣告追蹤腳本的 data:text/html iframe | 非本擴充功能問題，可忽略 |
+| 11 | **HTML tag 被翻譯出來** | Element 級 innerText 取出包含子元素的文字合併送翻譯 | **改用 Text Node 遍歷，只翻譯純文字節點** |
+| 12 | **翻譯後版面跑掉** | afterend 插入 span 在 table/flex 佈局中破壞結構 | **改用段落後插入翻譯行 + text node 原地替換** |
 
 ## 8. Future Expansion (Post-MVP)
 
@@ -400,3 +459,6 @@ window.postMessage({
 - [ ] 快捷鍵支援（Ctrl+Shift+T 觸發翻譯）
 - [ ] 翻譯品質微調（排除已是目標語言的段落）
 - [ ] 自動翻譯模式（頁面載入後自動翻譯）
+- [ ] 智慧容器偵測（文字密度分析，自動聚焦文章正文）
+- [ ] Viewport 感知的懶翻譯（只翻譯可見區域）
+- [ ] 網站特殊規則系統（per-site selector/container 配置）

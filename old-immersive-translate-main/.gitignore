@@ -1,0 +1,9 @@
+node_modules
+.env
+extra/package-lock.json
+dist
+test
+web-ext-artifacts/
+.DS_Store
+*.pem
+.obsidian

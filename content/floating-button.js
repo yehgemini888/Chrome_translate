@@ -24,6 +24,7 @@ const CTFloatingButton = {
     this._onClick = onClick;
     this._btn = document.createElement('button');
     this._btn.className = CT.CLS_FLOAT_BTN;
+    this._btn.setAttribute(CT.ATTR_CT_INJECTED, 'true');
     this._btn.title = 'Chrome Translate — 點擊翻譯';
     this._btn.innerHTML = this._icons.idle;
     // Stop propagation to prevent host page handlers from hitting our SVG elements
@@ -117,6 +118,7 @@ const CTFloatingButton = {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     `;
     tip.textContent = message;
+    tip.setAttribute(CT.ATTR_CT_INJECTED, 'true');
     document.body.appendChild(tip);
 
     setTimeout(() => {

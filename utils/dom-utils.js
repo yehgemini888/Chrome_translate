@@ -1,22 +1,31 @@
-/* Chrome Translate — DOM Utilities */
+/* Chrome Translate — DOM Utilities (V2: Text Node Level Traversal) */
 'use strict';
 
 const CTDom = {
   MIN_TEXT_LENGTH: 2,
 
-  BLOCK_ELEMENT_TAGS: new Set([
-    'DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
-    'LI', 'DT', 'DD', 'BLOCKQUOTE', 'FIGURE', 'FIGCAPTION',
-    'ARTICLE', 'SECTION', 'ASIDE', 'MAIN', 'NAV',
-    'HEADER', 'FOOTER', 'FORM', 'FIELDSET',
-    'TABLE', 'THEAD', 'TBODY', 'TR', 'TD', 'TH',
-    'UL', 'OL', 'DL', 'PRE', 'ADDRESS',
-    'DETAILS', 'SUMMARY', 'DIALOG'
-  ]),
+  /**
+   * Check if a node should be skipped from translation.
+   * Uses W3C standards only — no CSS class/ID heuristics.
+   */
+  _isNoTranslateNode(node) {
+    if (!node || !node.getAttribute) return false;
+    // HTML5 standard: translate="no"
+    if (node.getAttribute('translate') === 'no') return true;
+    // Google convention: class="notranslate"
+    if (node.classList && node.classList.contains('notranslate')) return true;
+    // Explicit contenteditable (not inherited — avoids skipping entire page)
+    if (node.getAttribute('contenteditable') === 'true') return true;
+    // Our own injected elements (Strategy A: data attribute)
+    if (node.hasAttribute(CT.ATTR_CT_INJECTED)) return true;
+    // Already translated parent
+    if (node.hasAttribute(CT.ATTR_TRANSLATED)) return true;
+    return false;
+  },
 
   /**
-   * Check if an element is inside a navigation context (nav bar, menu bar, etc.).
-   * Walks up max 6 ancestor levels.
+   * Check if an element is inside a navigation context.
+   * Uses semantic HTML only: <nav> tag or role="navigation".
    */
   _isInNavContext(el) {
     let current = el;
@@ -25,8 +34,6 @@ const CTDom = {
       if (current.tagName === 'NAV') return true;
       const role = current.getAttribute && current.getAttribute('role');
       if (role === 'navigation' || role === 'menubar') return true;
-      const cls = current.className;
-      if (cls && typeof cls === 'string' && /\b(navbar|nav-bar|menubar|menu-bar|topbar|top-bar|main-nav|site-nav)\b/i.test(cls)) return true;
       current = current.parentElement;
     }
     return false;
@@ -34,186 +41,271 @@ const CTDom = {
 
   /**
    * Post-filter: decide whether a text block should be translated.
-   * Returns false for timestamps, numbers-only, short labels, CJK-majority text,
-   * visually-hidden elements (skip links), bylines, financial data, etc.
+   * Text-level filters only — no CSS class/ID heuristics (Strategy B).
    */
   _shouldTranslate(element, text) {
-    // Rule 0: Skip visually hidden / off-screen elements (skip navigation links, sr-only)
+    if (!element) return false;
+
+    // Rule 0: Skip visually hidden / off-screen elements
     try {
       const rect = element.getBoundingClientRect();
       if (rect.width < 1 && rect.height < 1) return false;
       if (rect.right < -500 || rect.left > window.innerWidth + 500) return false;
     } catch (e) { /* ignore */ }
 
-    // Rule 1: Skip <time> elements
-    if (element.tagName === 'TIME') return false;
-
-    // Rule 2: Skip elements inside logo/brand/badge/financial containers (6 ancestor levels)
-    let ancestor = element;
-    let inAside = false;
-    let inTable = false;
-    for (let i = 0; i < 6 && ancestor; i++) {
-      if (!ancestor.tagName) break;
-      if (ancestor.tagName === 'ASIDE') inAside = true;
-      if (ancestor.tagName === 'TABLE') inTable = true;
-
-      const cls = ancestor.className;
-      if (cls && typeof cls === 'string' && CT.SKIP_CONTAINER_PATTERNS.test(cls)) return false;
-
-      // Check element id for financial/market widgets
-      if (ancestor.id && CT.SKIP_ID_PATTERNS && CT.SKIP_ID_PATTERNS.test(ancestor.id)) return false;
-
-      // Check data-testid / data-id for financial widgets
-      if (ancestor.getAttribute) {
-        const testId = ancestor.getAttribute('data-testid') || ancestor.getAttribute('data-id');
-        if (testId && CT.SKIP_ID_PATTERNS && CT.SKIP_ID_PATTERNS.test(testId)) return false;
-      }
-
-      ancestor = ancestor.parentElement;
-    }
-
-    // Rule 2b: Skip data tables inside sidebars (financial data, scoreboards, etc.)
-    if (inAside && inTable) return false;
-
-    // Rule 3: Skip numbers-only text
+    // Rule 1: Skip numbers-only text
     if (CT.NUMBERS_ONLY_PATTERN.test(text)) return false;
 
-    // Rule 4: Skip timestamp patterns
+    // Rule 2: Skip standalone timestamp patterns
     if (CT.TIMESTAMP_PATTERN.test(text)) return false;
 
-    // Rule 5: Skip short non-heading text (< MIN_TRANSLATE_LENGTH chars)
+    // Rule 3: Skip short non-heading text
     const tag = element.tagName;
     const isHeading = tag === 'H1' || tag === 'H2' || tag === 'H3' ||
-                      tag === 'H4' || tag === 'H5' || tag === 'H6';
+      tag === 'H4' || tag === 'H5' || tag === 'H6';
     if (!isHeading && text.length < CT.MIN_TRANSLATE_LENGTH) return false;
 
-    // Rule 6: Skip text that is > 50% CJK characters (already in target language)
+    // Rule 4: Skip text that is > 50% CJK characters
     const cjkMatches = text.match(CT.CJK_PATTERN);
     if (cjkMatches && cjkMatches.length / text.length > 0.5) return false;
-
-    // Rule 7: Skip short byline/attribution text with relative time
-    // e.g. "Yahoo Finance · 3h ago", "Bloomberg · 32m ago", "Reuters · 1h ago"
-    if (text.length < 80) {
-      if (/\d+\s*(sec|min|hour|hr|day|week|month|year|[mhd])\w*\.?\s*ago/i.test(text)) return false;
-      if (/[·•|]\s*\d+\s*[mhd]\s*$/i.test(text)) return false;
-    }
 
     return true;
   },
 
   /**
-   * Check if an element contains any block-level descendants with text.
-   * Looks through inline wrappers (like <a>, <span>) to find nested blocks.
+   * Extract translatable text pieces using Text Node level traversal.
+   * - Collects text nodes (nodeType===3) and groups them by block boundaries.
+   * - Inline elements (a, span, strong, etc.) are traversed into without breaking pieces.
+   * - Block elements (div, p, h1, etc.) break pieces at their boundaries.
+   * - Returns pieces[]: { nodes: [textNode...], parentElement: Element }
    */
-  _hasBlockDescendant(el) {
-    for (const child of el.children) {
-      try {
-        if (CT.SKIP_TAGS.has(child.tagName)) continue;
-        if (this.BLOCK_ELEMENT_TAGS.has(child.tagName)) {
-          if (child.textContent && child.textContent.trim().length > 0) return true;
-        }
-        // Look through inline wrappers (a, span, em, strong, etc.)
-        if (!this.BLOCK_ELEMENT_TAGS.has(child.tagName) && child.children && child.children.length > 0) {
-          if (this._hasBlockDescendant(child)) return true;
-        }
-      } catch (e) { /* skip */ }
-    }
-    return false;
-  },
+  extractPieces(root = document.body) {
+    const pieces = [];
+    let currentPiece = null;
+    let currentCharCount = 0;
 
-  /**
-   * Extract translatable text blocks using recursive descent.
-   * - Element has block descendants with text → CONTAINER → recurse
-   * - Element has NO block descendants → LEAF → translate its innerText
-   * Handles modern patterns like <a> wrapping <h3>+<p>.
-   */
-  extractTextBlocks(root = document.body) {
-    const blocks = [];
-    const visited = new Set();
-
-    const walk = (el) => {
-      try {
-        if (!el || !el.tagName) return;
-        if (CT.SKIP_TAGS.has(el.tagName)) return;
-        if (visited.has(el)) return;
-
-        // Skip our own elements
-        if (el.className && typeof el.className === 'string' &&
-            el.className.indexOf('ct-') !== -1) return;
-
-        // Check if this element contains block-level descendants (even through inline wrappers)
-        if (CTDom._hasBlockDescendant(el)) {
-          // CONTAINER: recurse into all children
-          for (const child of el.children) {
-            walk(child);
-          }
-        } else {
-          // LEAF: translate this element's text
-          const text = (el.innerText || el.textContent || '').trim();
-          if (text.length >= CTDom.MIN_TEXT_LENGTH) {
-            visited.add(el);
-            blocks.push({ element: el, text });
-          }
-        }
-      } catch (e) {
-        // Skip problematic elements silently
+    function startNewPiece() {
+      if (currentPiece && currentPiece.nodes.length > 0) {
+        pieces.push(currentPiece);
       }
-    };
+      currentPiece = { nodes: [], parentElement: null, isTranslated: false };
+      currentCharCount = 0;
+    }
 
-    walk(root);
-    const filtered = blocks.filter(b => CTDom._shouldTranslate(b.element, b.text));
-    console.log('[Chrome Translate] Found', blocks.length, 'text blocks,', filtered.length, 'after filtering');
+    startNewPiece();
+
+    function walk(node, blockAncestor) {
+      // Text node — collect it
+      if (node.nodeType === 3) {
+        const text = node.textContent;
+        if (text && text.trim().length > 0) {
+          currentPiece.nodes.push(node);
+          if (!currentPiece.parentElement) {
+            currentPiece.parentElement = blockAncestor;
+          }
+          currentCharCount += text.length;
+          if (currentCharCount >= CT.PIECE_MAX_CHARS) {
+            startNewPiece();
+          }
+        }
+        return;
+      }
+
+      // Only process element nodes
+      if (node.nodeType !== 1) return;
+
+      const tag = node.tagName;
+      if (!tag) return;
+
+      // Skip entirely: script, style, code, pre, etc.
+      if (CT.SKIP_TAGS.has(tag)) return;
+
+      // Skip notranslate / contentEditable / translate="no"
+      if (CTDom._isNoTranslateNode(node)) return;
+
+      // Skip our own injected elements (Strategy A: data attribute)
+      if (node.hasAttribute && node.hasAttribute(CT.ATTR_CT_INJECTED)) return;
+
+      const isInline = CT.INLINE_TAGS.has(tag);
+
+      if (!isInline) {
+        // Block element: break piece before entering, update ancestor
+        startNewPiece();
+        blockAncestor = node;
+      }
+
+      // Recurse into children
+      for (const child of node.childNodes) {
+        walk(child, blockAncestor);
+      }
+
+      if (!isInline) {
+        // Block element: break piece after leaving
+        startNewPiece();
+      }
+    }
+
+    walk(root, root);
+    startNewPiece(); // flush last piece
+
+    // Filter: skip short, timestamp, CJK-majority, etc.
+    const filtered = pieces.filter(piece => {
+      const text = CTDom.getPieceText(piece).trim();
+      if (text.length < CTDom.MIN_TEXT_LENGTH) return false;
+      if (piece.parentElement && piece.parentElement.hasAttribute &&
+        piece.parentElement.hasAttribute(CT.ATTR_TRANSLATED)) return false;
+      return CTDom._shouldTranslate(piece.parentElement, text);
+    });
+
+    console.log('[Chrome Translate] Found', pieces.length, 'pieces,', filtered.length, 'after filtering');
     return filtered;
   },
 
   /**
-   * Insert translated text below the source element.
+   * Get concatenated text content from a piece's text nodes.
    */
-  insertTranslation(sourceElement, translatedText, id) {
-    CTDom.removeTranslation(sourceElement);
+  getPieceText(piece) {
+    return piece.nodes.map(n => n.textContent).join('');
+  },
 
-    // Use inline class for nav context or short text in nav-like areas
-    const useInline = CTDom._isInNavContext(sourceElement);
+  /**
+   * Get individual text node contents as an array (for HTML-aware translation).
+   */
+  getPieceTextArray(piece) {
+    return piece.nodes.map(n => n.textContent);
+  },
+
+  /**
+   * Insert translated text for a piece.
+   * Accepts either:
+   *   - perNodeTranslations: string[] (one translation per text node, preserves structure)
+   *   - translatedText: string       (concatenated fallback)
+   */
+  insertTranslation(piece, translatedTextOrArray, id) {
+    const parent = piece.parentElement;
+    if (!parent) return;
+
+    // Remove existing translation for this parent if any
+    const existingId = parent.getAttribute(CT.ATTR_TRANSLATED);
+    if (existingId) {
+      const sel = `.${CT.CLS_TRANSLATED}[${CT.ATTR_CT_ID}="${existingId}"], .${CT.CLS_TRANSLATED_INLINE}[${CT.ATTR_CT_ID}="${existingId}"]`;
+      const existing = document.querySelector(sel);
+      if (existing) existing.remove();
+    }
+
+    // Detect if inline display is needed (nav/flex/grid contexts)
+    const isNav = CTDom._isInNavContext(parent);
+    let parentDisplay = '';
+    try { parentDisplay = window.getComputedStyle(parent.parentElement).display; } catch (e) { }
+    const useInline = isNav || parentDisplay.includes('flex') || parentDisplay.includes('grid');
+
     const el = document.createElement('span');
     el.className = useInline ? CT.CLS_TRANSLATED_INLINE : CT.CLS_TRANSLATED;
     el.setAttribute(CT.ATTR_CT_ID, id);
-    el.textContent = translatedText;
+    el.setAttribute(CT.ATTR_CT_INJECTED, 'true');
 
-    sourceElement.setAttribute(CT.ATTR_TRANSLATED, id);
+    // Per-node translation: clone parent structure and fill in text
+    if (Array.isArray(translatedTextOrArray)) {
+      try {
+        el.innerHTML = CTDom._buildPerNodeHTML(parent, translatedTextOrArray);
+      } catch (e) {
+        el.textContent = translatedTextOrArray.join('');
+      }
+    } else {
+      // Fallback: plain text
+      try {
+        el.innerHTML = CTDom._buildTranslatedHTML(parent, translatedTextOrArray);
+      } catch (e) {
+        el.textContent = translatedTextOrArray;
+      }
+    }
 
-    // Copy source element's font properties so translation matches its visual style
-    // (e.g. headings stay large+bold, body text stays normal size)
+    parent.setAttribute(CT.ATTR_TRANSLATED, id);
+
+    // Copy full computed styles from the original element
     try {
-      const computed = window.getComputedStyle(sourceElement);
+      const computed = window.getComputedStyle(parent);
+      el.style.setProperty('color', computed.color, 'important');
       el.style.setProperty('font-size', computed.fontSize, 'important');
       el.style.setProperty('font-weight', computed.fontWeight, 'important');
+      el.style.setProperty('font-family', computed.fontFamily, 'important');
+      el.style.setProperty('line-height', computed.lineHeight, 'important');
+      el.style.setProperty('letter-spacing', computed.letterSpacing, 'important');
+      el.style.setProperty('text-align', computed.textAlign, 'important');
     } catch (e) { /* ignore */ }
 
-    const tag = sourceElement.tagName;
-    const parentTag = sourceElement.parentElement ? sourceElement.parentElement.tagName : '';
-
-    if (tag === 'TD' || tag === 'TH' || tag === 'LI' ||
-        tag === 'DT' || tag === 'DD' ||
-        parentTag === 'TD' || parentTag === 'TH' ||
-        parentTag === 'TR' || parentTag === 'TABLE' ||
-        parentTag === 'TBODY') {
-      sourceElement.appendChild(el);
-    } else {
-      sourceElement.insertAdjacentElement('afterend', el);
-    }
+    // Always append inside the parent element
+    parent.appendChild(el);
 
     return el;
   },
 
-  removeTranslation(sourceElement) {
-    const id = sourceElement.getAttribute(CT.ATTR_TRANSLATED);
-    if (!id) return;
-    const selector = `.${CT.CLS_TRANSLATED}[${CT.ATTR_CT_ID}="${id}"], .${CT.CLS_TRANSLATED_INLINE}[${CT.ATTR_CT_ID}="${id}"]`;
-    const existing = document.querySelector(selector);
-    if (existing) existing.remove();
-    sourceElement.removeAttribute(CT.ATTR_TRANSLATED);
+  /**
+   * Build translated HTML with per-text-node translations.
+   * Clones the parent's structure, replaces each text node with its translation.
+   * This precisely preserves <a>, <strong>, <em>, etc.
+   */
+  _buildPerNodeHTML(parent, perNodeTranslations) {
+    const clone = parent.cloneNode(true);
+
+    // Remove any ct-injected elements from the clone
+    clone.querySelectorAll(`[${CT.ATTR_CT_INJECTED}]`).forEach(n => n.remove());
+
+    // Collect meaningful text nodes in the clone (matching extractPieces order)
+    const textNodes = [];
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT, null);
+    while (walker.nextNode()) {
+      if (walker.currentNode.textContent.trim().length > 0) {
+        textNodes.push(walker.currentNode);
+      }
+    }
+
+    // Replace each text node with its per-node translation
+    const translations = perNodeTranslations;
+    for (let i = 0; i < textNodes.length && i < translations.length; i++) {
+      if (translations[i]) {
+        textNodes[i].textContent = translations[i];
+      }
+    }
+
+    // Handle case where translation has fewer/more nodes than original
+    // Extra translations: append to last text node
+    if (translations.length > textNodes.length && textNodes.length > 0) {
+      const extra = translations.slice(textNodes.length).filter(Boolean).join(' ');
+      if (extra) {
+        textNodes[textNodes.length - 1].textContent += ' ' + extra;
+      }
+    }
+
+    return clone.innerHTML;
   },
 
+  /**
+   * Fallback: build translated HTML from a single concatenated string.
+   * Clones parent structure and replaces all text with the translated string.
+   */
+  _buildTranslatedHTML(parent, translatedText) {
+    const clone = parent.cloneNode(true);
+    clone.querySelectorAll(`[${CT.ATTR_CT_INJECTED}]`).forEach(n => n.remove());
+    clone.textContent = translatedText;
+    return clone.innerHTML;
+  },
+
+  /**
+   * Remove translation for a single parent element.
+   */
+  removeTranslation(parentElement) {
+    const id = parentElement.getAttribute(CT.ATTR_TRANSLATED);
+    if (!id) return;
+    const sel = `.${CT.CLS_TRANSLATED}[${CT.ATTR_CT_ID}="${id}"], .${CT.CLS_TRANSLATED_INLINE}[${CT.ATTR_CT_ID}="${id}"]`;
+    const existing = document.querySelector(sel);
+    if (existing) existing.remove();
+    parentElement.removeAttribute(CT.ATTR_TRANSLATED);
+  },
+
+  /**
+   * Remove all translations from the page.
+   */
   removeAllTranslations() {
     document.querySelectorAll(`.${CT.CLS_TRANSLATED}, .${CT.CLS_TRANSLATED_INLINE}`).forEach(el => el.remove());
     document.querySelectorAll(`[${CT.ATTR_TRANSLATED}]`).forEach(el => {
@@ -221,6 +313,9 @@ const CTDom = {
     });
   },
 
+  /**
+   * Batch texts into groups respecting max texts and max chars per request.
+   */
   batchTexts(texts) {
     const batches = [];
     let currentTexts = [];

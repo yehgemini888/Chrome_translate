@@ -26,6 +26,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleTranslate(message.payload).then(sendResponse);
       return true; // async response
 
+    case CT.MSG_TRANSLATE_HTML:
+      handleTranslateHTML(message.payload).then(sendResponse);
+      return true;
+
     default:
       return false;
   }
@@ -95,6 +99,95 @@ async function handleTranslate(payload) {
     };
   } catch (e) {
     console.error('[Chrome Translate] handleTranslate error:', e);
+    return {
+      type: CT.MSG_TRANSLATE_RESULT,
+      error: { message: e.message, code: e.code || 'UNKNOWN' }
+    };
+  }
+}
+
+/**
+ * Handle per-text-node translation (preserves links/formatting structure).
+ * Flattens all text nodes, translates each individually via the working gtx
+ * endpoint (with cache + concurrency), then maps results back per-piece.
+ * @param {{ textNodeArrays: string[][], targetLang: string }} payload
+ */
+async function handleTranslateHTML(payload) {
+  try {
+    const { textNodeArrays, targetLang } = payload;
+
+    // 1. Flatten all text nodes into a single list with mapping
+    const allTexts = [];
+    const mapping = []; // { pieceIdx, nodeIdx }
+
+    for (let p = 0; p < textNodeArrays.length; p++) {
+      for (let n = 0; n < textNodeArrays[p].length; n++) {
+        const text = textNodeArrays[p][n];
+        if (text && text.trim()) {
+          allTexts.push(text);
+          mapping.push({ pieceIdx: p, nodeIdx: n });
+        }
+      }
+    }
+
+    if (allTexts.length === 0) {
+      return {
+        type: CT.MSG_TRANSLATE_RESULT,
+        payload: { perNodeTranslations: textNodeArrays.map(a => new Array(a.length).fill('')), sourceLang: '' }
+      };
+    }
+
+    // 2. Check cache for already-translated texts
+    const cached = await getCachedBatch(allTexts);
+    const uncachedTexts = [];
+    const uncachedIndices = [];
+
+    allTexts.forEach((text, i) => {
+      if (!cached[i]) {
+        uncachedTexts.push(text);
+        uncachedIndices.push(i);
+      }
+    });
+
+    // 3. Translate uncached texts using existing concurrent translator
+    const freshTranslations = new Array(allTexts.length).fill('');
+    cached.forEach((val, i) => { if (val) freshTranslations[i] = val; });
+
+    if (uncachedTexts.length > 0) {
+      const result = await GoogleTranslateClient.translate(uncachedTexts, targetLang);
+
+      uncachedIndices.forEach((origIdx, freshIdx) => {
+        freshTranslations[origIdx] = result.translations[freshIdx];
+      });
+
+      // Cache the new translations
+      const validTexts = [];
+      const validTranslations = [];
+      uncachedTexts.forEach((text, i) => {
+        if (result.translations[i]) {
+          validTexts.push(text);
+          validTranslations.push(result.translations[i]);
+        }
+      });
+      if (validTexts.length > 0) {
+        await setCacheBatch(validTexts, validTranslations);
+      }
+    }
+
+    // 4. Map flat results back to per-piece, per-node structure
+    const perNodeTranslations = textNodeArrays.map(arr => new Array(arr.length).fill(''));
+    mapping.forEach((m, i) => {
+      perNodeTranslations[m.pieceIdx][m.nodeIdx] = freshTranslations[i];
+    });
+
+    console.log(`[Chrome Translate] Per-node translated ${allTexts.length} nodes (${cached.filter(Boolean).length} cached)`);
+
+    return {
+      type: CT.MSG_TRANSLATE_RESULT,
+      payload: { perNodeTranslations, sourceLang: '' }
+    };
+  } catch (e) {
+    console.error('[Chrome Translate] handleTranslateHTML error:', e);
     return {
       type: CT.MSG_TRANSLATE_RESULT,
       error: { message: e.message, code: e.code || 'UNKNOWN' }

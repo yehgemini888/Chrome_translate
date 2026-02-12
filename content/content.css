@@ -45,11 +45,14 @@
 }
 
 /* === Bilingual Translation Display === */
-/* Mimics Immersive Translate style: translation right below original, subtle gray */
+/*
+ * Strategy: inherit ALL styles from the original element.
+ * The JS copies computed color, font-size, font-weight, font-family,
+ * line-height, and letter-spacing directly onto each injected span.
+ * CSS only provides the layout scaffolding.
+ */
 .ct-translated {
   display: block !important;
-  font-size: inherit !important;
-  line-height: inherit !important;
   margin: 0 !important;
   padding: 0 !important;
   border: none !important;
@@ -58,26 +61,14 @@
   width: auto !important;
   position: relative !important;
   background: transparent !important;
-  color: #999 !important;
   word-wrap: break-word !important;
-  font-style: inherit !important;
-  font-weight: inherit !important;
   text-decoration: none !important;
+  /* No hardcoded color/font — all set via inline styles by JS */
 }
 
-/* Heading context: ensure translations near/inside headings stay bold */
-h1 + .ct-translated, h2 + .ct-translated, h3 + .ct-translated,
-h4 + .ct-translated, h5 + .ct-translated, h6 + .ct-translated,
-h1 .ct-translated, h2 .ct-translated, h3 .ct-translated,
-h4 .ct-translated, h5 .ct-translated, h6 .ct-translated {
-  font-weight: bold !important;
-}
-
-/* Inline translation (for nav bars and short text in navigation context) */
+/* Inline translation (for nav bars, flex/grid items, inline contexts) */
 .ct-translated-inline {
   display: inline !important;
-  font-size: inherit !important;
-  line-height: inherit !important;
   margin: 0 !important;
   padding: 0 !important;
   border: none !important;
@@ -86,25 +77,12 @@ h4 .ct-translated, h5 .ct-translated, h6 .ct-translated {
   width: auto !important;
   position: relative !important;
   background: transparent !important;
-  color: #999 !important;
   word-wrap: break-word !important;
-  font-style: inherit !important;
-  font-weight: inherit !important;
   text-decoration: none !important;
 }
 
 .ct-translated-inline::before {
   content: ' ';
-}
-
-/* Dark mode support */
-@media (prefers-color-scheme: dark) {
-  .ct-translated {
-    color: #888 !important;
-  }
-  .ct-translated-inline {
-    color: #888 !important;
-  }
 }
 
 /* === YouTube Dual Subtitles === */

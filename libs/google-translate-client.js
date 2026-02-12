@@ -4,7 +4,7 @@
 const GoogleTranslateClient = {
   /**
    * Translate an array of texts via Google Translate free endpoint.
-   * Sends individual requests per text with concurrency control for reliability.
+   * Each text is a concatenated block — links/structure are lost.
    *
    * @param {string[]} texts - Array of texts to translate
    * @param {string} targetLang - Target language code (e.g. 'zh-TW')
@@ -89,7 +89,164 @@ const GoogleTranslateClient = {
   },
 
   /**
-   * Parse Google Translate API response.
+   * Translate text nodes as HTML using <a i=N> markers (Immersive Translate technique).
+   * Google's format=html endpoint preserves <a> tag positions in the translation,
+   * so we can map translations back to individual text nodes (preserving links, bold, etc.).
+   *
+   * @param {string[]} textNodesContent - Array of text node contents within one piece
+   * @param {string} targetLang - Target language code
+   * @returns {Promise<{translations: string[], sourceLang: string}>}
+   */
+  async translateHTML(textNodesContent, targetLang) {
+    if (!textNodesContent.length) return { translations: [], sourceLang: '' };
+
+    // If only one text node, use simple translation (no need for markers)
+    if (textNodesContent.length === 1) {
+      const result = await this.translateSingle(textNodesContent[0], targetLang);
+      return { translations: [result.text], sourceLang: result.sourceLang };
+    }
+
+    // Build HTML with indexed <a> tags (same technique as Immersive Translate)
+    // Escape HTML entities in text, then wrap each node's text in <a i=N>
+    const escaped = textNodesContent.map(t => this._escapeHTML(t));
+    const tagged = escaped.map((text, i) => `<a i=${i}>${text}</a>`);
+    const htmlPayload = `<pre>${tagged.join('')}</pre>`;
+
+    // Use the HTML-aware Google Translate endpoint
+    const url = CT.GOOGLE_TRANSLATE_HTML_URL;
+    const body = `q=${encodeURIComponent(htmlPayload)}&sl=auto&tl=${targetLang}`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
+    });
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        await new Promise(r => setTimeout(r, 1000));
+        const retry = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body
+        });
+        if (!retry.ok) {
+          throw new TranslateError('Google 翻譯請求過於頻繁', 'RATE_LIMITED');
+        }
+        return this._parseHTMLResponse(await retry.json(), textNodesContent.length);
+      }
+      throw new TranslateError(`Google 翻譯錯誤: ${response.status}`, 'API_ERROR');
+    }
+
+    const data = await response.json();
+    return this._parseHTMLResponse(data, textNodesContent.length);
+  },
+
+  /**
+   * Parse response from the format=html Google Translate endpoint.
+   * The response contains <b>translated</b><i>original</i> pairs and <a i=N> markers.
+   */
+  _parseHTMLResponse(data, nodeCount) {
+    let result = '';
+    let sourceLang = '';
+
+    // Response format: string or [string, lang] or [[string, lang], ...]
+    if (typeof data === 'string') {
+      result = data;
+    } else if (Array.isArray(data)) {
+      if (typeof data[0] === 'string') {
+        result = data[0];
+        sourceLang = data[1] || '';
+      } else if (Array.isArray(data[0])) {
+        result = data[0][0] || '';
+        sourceLang = data[0][1] || '';
+      }
+    }
+
+    // Strip <pre> wrapper
+    if (result.indexOf('<pre') !== -1) {
+      result = result.replace('</pre>', '');
+      const idx = result.indexOf('>');
+      result = result.slice(idx + 1);
+    }
+
+    // Extract translated sentences from <b> tags (Google wraps translations in <b>)
+    // and ignore original text in <i> tags
+    const sentences = [];
+    let pos = 0;
+    while (true) {
+      const bStart = result.indexOf('<b>', pos);
+      if (bStart === -1) break;
+      const iStart = result.indexOf('<i>', bStart);
+      if (iStart === -1) {
+        sentences.push(result.slice(bStart + 3));
+        break;
+      } else {
+        sentences.push(result.slice(bStart + 3, iStart));
+      }
+      pos = iStart;
+    }
+
+    const merged = sentences.length > 0 ? sentences.join(' ') : result;
+    const cleaned = merged.replace(/<\/b>/g, '');
+
+    // Parse <a i=N> tags to extract per-node translations
+    const translations = new Array(nodeCount).fill('');
+
+    // Match all <a i=N>text</a> segments, handling text outside tags
+    const tagRegex = /(<a\si=[0-9]+>)([^<>]*(?=<\/a>))*/g;
+    let lastEnd = 0;
+    const segments = [];
+
+    for (const m of cleaned.matchAll(tagRegex)) {
+      const fullText = m[0];
+      const aTag = m[1];
+      const insideText = m[2] || '';
+      const mPos = m.index;
+
+      // Text before this tag belongs to the nearest <a> tag
+      if (mPos > lastEnd) {
+        const outsideText = cleaned.slice(lastEnd, mPos).replace(/<\/a>/g, '');
+        segments.push({ tag: aTag, text: outsideText + insideText });
+      } else {
+        segments.push({ tag: aTag, text: insideText });
+      }
+      lastEnd = mPos + fullText.length;
+    }
+
+    // Trailing text after the last tag
+    if (segments.length > 0) {
+      const trailing = cleaned.slice(lastEnd).replace(/<\/a>/g, '');
+      if (trailing.trim()) {
+        segments[segments.length - 1].text += trailing;
+      }
+    }
+
+    // Map segments to node indices
+    for (const seg of segments) {
+      const idxMatch = seg.tag.match(/[0-9]+(?=>)/);
+      if (idxMatch) {
+        const idx = parseInt(idxMatch[0]);
+        if (idx >= 0 && idx < nodeCount) {
+          if (translations[idx]) {
+            translations[idx] += ' ' + this._unescapeHTML(seg.text);
+          } else {
+            translations[idx] = this._unescapeHTML(seg.text);
+          }
+        }
+      }
+    }
+
+    // Fallback: if no tags were parsed, use the whole result for node 0
+    if (segments.length === 0) {
+      translations[0] = this._unescapeHTML(cleaned);
+    }
+
+    return { translations, sourceLang };
+  },
+
+  /**
+   * Parse Google Translate API response (plain text mode).
    */
   _parseResponse(data) {
     let translated = '';
@@ -101,6 +258,24 @@ const GoogleTranslateClient = {
     }
     const sourceLang = data[2] || '';
     return { text: translated.trim(), sourceLang };
+  },
+
+  _escapeHTML(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  },
+
+  _unescapeHTML(str) {
+    return str
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
   }
 };
 

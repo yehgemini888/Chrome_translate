@@ -71,6 +71,7 @@
       lastUrl = location.href;
 
       // Reset translation state
+      CTTranslator._stopObserving();
       CTTranslator._translated = false;
       CTTranslator._isTranslating = false;
 
@@ -88,12 +89,12 @@
 
     // Intercept history.pushState / replaceState
     const origPushState = history.pushState;
-    history.pushState = function() {
+    history.pushState = function () {
       origPushState.apply(this, arguments);
       onSPANavigate();
     };
     const origReplaceState = history.replaceState;
-    history.replaceState = function() {
+    history.replaceState = function () {
       origReplaceState.apply(this, arguments);
       onSPANavigate();
     };

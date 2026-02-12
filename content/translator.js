@@ -5,10 +5,13 @@ const CTTranslator = {
   _isTranslating: false,
   _abortController: null,
   _translated: false,
+  _mutationObserver: null,
+  _pendingNodes: [],
+  _mutationTimer: null,
 
   /**
-   * Translate the current page. Extracts text blocks, sends for translation,
-   * and injects bilingual display below each source block.
+   * Translate the current page. Extracts text pieces, sends for translation,
+   * and injects bilingual display after each source block.
    */
   async translatePage() {
     if (this._isTranslating) return;
@@ -18,9 +21,9 @@ const CTTranslator = {
     try {
       CTFloatingButton.setState('translating');
 
-      // 1. Extract text blocks from DOM
-      const blocks = CTDom.extractTextBlocks();
-      if (blocks.length === 0) {
+      // 1. Extract text pieces from DOM (Text Node level)
+      const pieces = CTDom.extractPieces();
+      if (pieces.length === 0) {
         CTFloatingButton.setState('done', '此頁面沒有可翻譯的文字');
         this._isTranslating = false;
         return;
@@ -30,29 +33,56 @@ const CTTranslator = {
       const settings = await chrome.storage.local.get([CT.STORAGE_TARGET_LANG, CT.STORAGE_ENABLED]);
       const targetLang = settings[CT.STORAGE_TARGET_LANG] || CT.DEFAULT_TARGET_LANG;
 
-      // 3. Batch the texts
-      const allTexts = blocks.map(b => b.text);
-      const batches = CTDom.batchTexts(allTexts);
+      // 3. Extract per-text-node arrays for HTML-aware translation
+      const allTextNodeArrays = pieces.map(p => CTDom.getPieceTextArray(p));
 
-      // 4. Translate batches with concurrency control
-      const allTranslations = new Array(allTexts.length).fill(null);
-      let completedBatches = 0;
-      const totalBatches = batches.length;
+      // 4. Batch pieces for the HTML endpoint (smaller batches for reliability)
+      const BATCH_SIZE = 10;
+      const allPerNodeResults = new Array(pieces.length).fill(null);
+      let completedPieces = 0;
 
-      CTFloatingButton.setProgress(0, totalBatches);
+      CTFloatingButton.setProgress(0, pieces.length);
 
-      // Process batches with limited concurrency
-      const queue = [...batches];
-      const workers = [];
+      for (let start = 0; start < allTextNodeArrays.length; start += BATCH_SIZE) {
+        if (this._abortController.signal.aborted) break;
 
-      for (let i = 0; i < Math.min(CT.MAX_CONCURRENT_BATCHES, queue.length); i++) {
-        workers.push(this._processBatchQueue(queue, allTranslations, targetLang, () => {
-          completedBatches++;
-          CTFloatingButton.setProgress(completedBatches, totalBatches);
-        }));
+        const batchArrays = allTextNodeArrays.slice(start, start + BATCH_SIZE);
+
+        try {
+          const response = await chrome.runtime.sendMessage({
+            type: CT.MSG_TRANSLATE_HTML,
+            payload: { textNodeArrays: batchArrays, targetLang }
+          });
+
+          if (!response) {
+            console.error('[Chrome Translate] No response from service worker');
+            continue;
+          }
+
+          if (response.error) {
+            console.error('[Chrome Translate] Service worker error:', response.error);
+            throw new Error(response.error.message);
+          }
+
+          if (response.payload && response.payload.perNodeTranslations) {
+            response.payload.perNodeTranslations.forEach((nodeTranslations, batchIdx) => {
+              const origIdx = start + batchIdx;
+              // Only accept non-empty results
+              if (nodeTranslations && nodeTranslations.some(t => t)) {
+                allPerNodeResults[origIdx] = nodeTranslations;
+              }
+            });
+          }
+        } catch (e) {
+          console.error('[Chrome Translate] Batch translation error:', e);
+          if (e.message && e.message.includes('Extension context invalidated')) {
+            throw e;
+          }
+        }
+
+        completedPieces += batchArrays.length;
+        CTFloatingButton.setProgress(completedPieces, pieces.length);
       }
-
-      await Promise.all(workers);
 
       // Check if aborted
       if (this._abortController.signal.aborted) {
@@ -60,23 +90,25 @@ const CTTranslator = {
         return;
       }
 
-      // 5. Inject translations into DOM
+      // 5. Inject per-node translations into DOM
       let injectedCount = 0;
-      blocks.forEach((block, i) => {
-        if (allTranslations[i]) {
+      pieces.forEach((piece, i) => {
+        if (allPerNodeResults[i]) {
           const id = 'ct-' + i;
-          CTDom.insertTranslation(block.element, allTranslations[i], id);
+          CTDom.insertTranslation(piece, allPerNodeResults[i], id);
           injectedCount++;
         }
       });
 
-      console.log(`[Chrome Translate] Injected ${injectedCount}/${blocks.length} translations`);
+      console.log(`[Chrome Translate] Injected ${injectedCount}/${pieces.length} translations`);
 
       if (injectedCount === 0) {
         CTFloatingButton.showError('翻譯失敗 — 請檢查網路連線或重新整理頁面');
       } else {
         this._translated = true;
         CTFloatingButton.setState('done', `翻譯完成 (${injectedCount} 段)`);
+        // Start observing for dynamically added content
+        this._startObserving();
       }
 
     } catch (e) {
@@ -133,11 +165,9 @@ const CTTranslator = {
         console.log(`[Chrome Translate] Batch done: ${batchSuccess}/${batch.texts.length} texts translated`);
       } catch (e) {
         console.error('[Chrome Translate] Batch translation error:', e);
-        // If extension context is invalidated, stop processing
         if (e.message && e.message.includes('Extension context invalidated')) {
           throw e;
         }
-        // Mark failed items as null — they just won't show translation
       }
 
       onBatchDone();
@@ -145,9 +175,123 @@ const CTTranslator = {
   },
 
   /**
+   * Start MutationObserver to translate dynamically added content.
+   */
+  _startObserving() {
+    if (this._mutationObserver) return;
+
+    this._mutationObserver = new MutationObserver((mutations) => {
+      if (!this._translated) return;
+
+      mutations.forEach(mutation => {
+        mutation.addedNodes.forEach(node => {
+          if (node.nodeType === 1 && !CT.SKIP_TAGS.has(node.tagName) &&
+            !(node.className && typeof node.className === 'string' &&
+              node.className.indexOf('ct-') !== -1)) {
+            this._pendingNodes.push(node);
+          }
+        });
+      });
+
+      if (this._pendingNodes.length > 0 && !this._mutationTimer) {
+        this._mutationTimer = setTimeout(() => this._translatePendingNodes(), 2000);
+      }
+    });
+
+    this._mutationObserver.observe(document.body, { childList: true, subtree: true });
+  },
+
+  /**
+   * Translate nodes that were dynamically added after initial translation.
+   */
+  async _translatePendingNodes() {
+    this._mutationTimer = null;
+    if (this._pendingNodes.length === 0) return;
+
+    const nodes = [...this._pendingNodes];
+    this._pendingNodes = [];
+
+    // Extract pieces from new nodes
+    const allPieces = [];
+    nodes.forEach(node => {
+      if (document.body.contains(node)) {
+        try {
+          const pieces = CTDom.extractPieces(node);
+          allPieces.push(...pieces);
+        } catch (e) { /* skip problematic nodes */ }
+      }
+    });
+
+    if (allPieces.length === 0) return;
+
+    try {
+      const settings = await chrome.storage.local.get([CT.STORAGE_TARGET_LANG]);
+      const targetLang = settings[CT.STORAGE_TARGET_LANG] || CT.DEFAULT_TARGET_LANG;
+
+      const allTextNodeArrays = allPieces.map(p => CTDom.getPieceTextArray(p));
+      const perNodeResults = new Array(allPieces.length).fill(null);
+
+      // Translate in small batches
+      const BATCH_SIZE = 10;
+      for (let start = 0; start < allTextNodeArrays.length; start += BATCH_SIZE) {
+        const batchArrays = allTextNodeArrays.slice(start, start + BATCH_SIZE);
+
+        try {
+          const response = await chrome.runtime.sendMessage({
+            type: CT.MSG_TRANSLATE_HTML,
+            payload: { textNodeArrays: batchArrays, targetLang }
+          });
+          if (response && response.payload && response.payload.perNodeTranslations) {
+            response.payload.perNodeTranslations.forEach((nodeTranslations, batchIdx) => {
+              const origIdx = start + batchIdx;
+              if (nodeTranslations && nodeTranslations.some(t => t)) {
+                perNodeResults[origIdx] = nodeTranslations;
+              }
+            });
+          }
+        } catch (e) {
+          console.error('[Chrome Translate] Dynamic translation batch error:', e);
+          if (e.message && e.message.includes('Extension context invalidated')) return;
+        }
+      }
+
+      let count = 0;
+      const ts = Date.now();
+      allPieces.forEach((piece, i) => {
+        if (perNodeResults[i]) {
+          CTDom.insertTranslation(piece, perNodeResults[i], 'ct-dyn-' + ts + '-' + i);
+          count++;
+        }
+      });
+
+      if (count > 0) {
+        console.log(`[Chrome Translate] Dynamically translated ${count} new pieces`);
+      }
+    } catch (e) {
+      console.error('[Chrome Translate] Dynamic translation error:', e);
+    }
+  },
+
+  /**
+   * Stop the MutationObserver.
+   */
+  _stopObserving() {
+    if (this._mutationObserver) {
+      this._mutationObserver.disconnect();
+      this._mutationObserver = null;
+    }
+    if (this._mutationTimer) {
+      clearTimeout(this._mutationTimer);
+      this._mutationTimer = null;
+    }
+    this._pendingNodes = [];
+  },
+
+  /**
    * Remove all translations and reset state.
    */
   removeTranslations() {
+    this._stopObserving();
     CTDom.removeAllTranslations();
     this._translated = false;
     CTFloatingButton.setState('idle');

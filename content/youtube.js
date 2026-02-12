@@ -182,6 +182,7 @@ const CTYouTube = {
       if (translation) {
         const translatedSpan = document.createElement('span');
         translatedSpan.className = CT.CLS_YT_TRANSLATED;
+        translatedSpan.setAttribute(CT.ATTR_CT_INJECTED, 'true');
         translatedSpan.textContent = translation;
 
         // Insert after the original text within the caption window
