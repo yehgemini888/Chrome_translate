@@ -25,12 +25,11 @@
 
   const isYouTube = window.location.hostname.includes('youtube.com');
 
-  // Initialize floating button
-  CTFloatingButton.create((state) => {
+  // Button click handler (extracted so we can reuse on SPA re-create)
+  function onButtonClick(state) {
     switch (state) {
       case 'idle':
         if (isYouTube) {
-          // On YouTube, manually trigger subtitle translation if auto failed
           triggerYouTubeTranslation();
         } else {
           CTTranslator.translatePage();
@@ -51,11 +50,54 @@
         CTFloatingButton.setState('idle');
         break;
     }
-  });
+  }
+
+  // Initialize floating button
+  CTFloatingButton.create(onButtonClick);
 
   // Initialize YouTube subtitle handler if on YouTube
   if (isYouTube) {
     CTYouTube.init();
+  }
+
+  // --- SPA Navigation Detection ---
+  // Sites like Yahoo Finance use pushState routing; detect page changes
+  // and reset state / re-create button if the framework removed it.
+  if (!isYouTube) {
+    let lastUrl = location.href;
+
+    function onSPANavigate() {
+      if (location.href === lastUrl) return;
+      lastUrl = location.href;
+
+      // Reset translation state
+      CTTranslator._translated = false;
+      CTTranslator._isTranslating = false;
+
+      // Wait for the new page content to render, then ensure button exists
+      setTimeout(() => {
+        if (!document.body.contains(CTFloatingButton._btn)) {
+          CTFloatingButton._btn = null;
+          CTFloatingButton._state = 'idle';
+          CTFloatingButton.create(onButtonClick);
+        } else {
+          CTFloatingButton.setState('idle');
+        }
+      }, 600);
+    }
+
+    // Intercept history.pushState / replaceState
+    const origPushState = history.pushState;
+    history.pushState = function() {
+      origPushState.apply(this, arguments);
+      onSPANavigate();
+    };
+    const origReplaceState = history.replaceState;
+    history.replaceState = function() {
+      origReplaceState.apply(this, arguments);
+      onSPANavigate();
+    };
+    window.addEventListener('popstate', onSPANavigate);
   }
 
   // Listen for settings changes (e.g., enabled toggle from popup)

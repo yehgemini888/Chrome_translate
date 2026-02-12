@@ -31,8 +31,17 @@ const CT = Object.freeze({
 
   // CSS classes
   CLS_TRANSLATED: 'ct-translated',
+  CLS_TRANSLATED_INLINE: 'ct-translated-inline',
   CLS_FLOAT_BTN: 'ct-float-btn',
   CLS_YT_TRANSLATED: 'ct-yt-translated',
+
+  // Content filtering
+  MIN_TRANSLATE_LENGTH: 5,
+  TIMESTAMP_PATTERN: /^(\d{1,2}[\/:]\d{2}([\/:]\d{2})?(\s*[AP]M)?|\d+\s*(min|minute|hour|hr|day|week|month|year|sec|second)s?\s*ago|yesterday|today|just now|\d{4}[-\/]\d{1,2}[-\/]\d{1,2})$/i,
+  NUMBERS_ONLY_PATTERN: /^[\d\s.,;:!?%$#@&*+\-\/=<>(){}\[\]|\\^~`'"]+$/,
+  CJK_PATTERN: /[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]/g,
+  SKIP_CONTAINER_PATTERNS: /\b(logo|brand|icon|badge|chip|tag|pill|breadcrumb|avatar|emoji|symbol|ticker|market|quote|stock|futures|indices|commodit|watchlist|screener|sparkline)\b/i,
+  SKIP_ID_PATTERNS: /quote|market[-_]?summary|ticker|stock|futures|indices|commodit|watchlist|screener/i,
 
   // Skip these tags during DOM traversal
   SKIP_TAGS: new Set([

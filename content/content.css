@@ -60,14 +60,49 @@
   background: transparent !important;
   color: #999 !important;
   word-wrap: break-word !important;
-  font-style: normal !important;
-  font-weight: normal !important;
+  font-style: inherit !important;
+  font-weight: inherit !important;
   text-decoration: none !important;
+}
+
+/* Heading context: ensure translations near/inside headings stay bold */
+h1 + .ct-translated, h2 + .ct-translated, h3 + .ct-translated,
+h4 + .ct-translated, h5 + .ct-translated, h6 + .ct-translated,
+h1 .ct-translated, h2 .ct-translated, h3 .ct-translated,
+h4 .ct-translated, h5 .ct-translated, h6 .ct-translated {
+  font-weight: bold !important;
+}
+
+/* Inline translation (for nav bars and short text in navigation context) */
+.ct-translated-inline {
+  display: inline !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  float: none !important;
+  clear: none !important;
+  width: auto !important;
+  position: relative !important;
+  background: transparent !important;
+  color: #999 !important;
+  word-wrap: break-word !important;
+  font-style: inherit !important;
+  font-weight: inherit !important;
+  text-decoration: none !important;
+}
+
+.ct-translated-inline::before {
+  content: ' ';
 }
 
 /* Dark mode support */
 @media (prefers-color-scheme: dark) {
   .ct-translated {
+    color: #888 !important;
+  }
+  .ct-translated-inline {
     color: #888 !important;
   }
 }

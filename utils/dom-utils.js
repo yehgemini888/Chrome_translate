@@ -15,6 +15,93 @@ const CTDom = {
   ]),
 
   /**
+   * Check if an element is inside a navigation context (nav bar, menu bar, etc.).
+   * Walks up max 6 ancestor levels.
+   */
+  _isInNavContext(el) {
+    let current = el;
+    for (let i = 0; i < 6 && current; i++) {
+      if (!current.tagName) break;
+      if (current.tagName === 'NAV') return true;
+      const role = current.getAttribute && current.getAttribute('role');
+      if (role === 'navigation' || role === 'menubar') return true;
+      const cls = current.className;
+      if (cls && typeof cls === 'string' && /\b(navbar|nav-bar|menubar|menu-bar|topbar|top-bar|main-nav|site-nav)\b/i.test(cls)) return true;
+      current = current.parentElement;
+    }
+    return false;
+  },
+
+  /**
+   * Post-filter: decide whether a text block should be translated.
+   * Returns false for timestamps, numbers-only, short labels, CJK-majority text,
+   * visually-hidden elements (skip links), bylines, financial data, etc.
+   */
+  _shouldTranslate(element, text) {
+    // Rule 0: Skip visually hidden / off-screen elements (skip navigation links, sr-only)
+    try {
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 1 && rect.height < 1) return false;
+      if (rect.right < -500 || rect.left > window.innerWidth + 500) return false;
+    } catch (e) { /* ignore */ }
+
+    // Rule 1: Skip <time> elements
+    if (element.tagName === 'TIME') return false;
+
+    // Rule 2: Skip elements inside logo/brand/badge/financial containers (6 ancestor levels)
+    let ancestor = element;
+    let inAside = false;
+    let inTable = false;
+    for (let i = 0; i < 6 && ancestor; i++) {
+      if (!ancestor.tagName) break;
+      if (ancestor.tagName === 'ASIDE') inAside = true;
+      if (ancestor.tagName === 'TABLE') inTable = true;
+
+      const cls = ancestor.className;
+      if (cls && typeof cls === 'string' && CT.SKIP_CONTAINER_PATTERNS.test(cls)) return false;
+
+      // Check element id for financial/market widgets
+      if (ancestor.id && CT.SKIP_ID_PATTERNS && CT.SKIP_ID_PATTERNS.test(ancestor.id)) return false;
+
+      // Check data-testid / data-id for financial widgets
+      if (ancestor.getAttribute) {
+        const testId = ancestor.getAttribute('data-testid') || ancestor.getAttribute('data-id');
+        if (testId && CT.SKIP_ID_PATTERNS && CT.SKIP_ID_PATTERNS.test(testId)) return false;
+      }
+
+      ancestor = ancestor.parentElement;
+    }
+
+    // Rule 2b: Skip data tables inside sidebars (financial data, scoreboards, etc.)
+    if (inAside && inTable) return false;
+
+    // Rule 3: Skip numbers-only text
+    if (CT.NUMBERS_ONLY_PATTERN.test(text)) return false;
+
+    // Rule 4: Skip timestamp patterns
+    if (CT.TIMESTAMP_PATTERN.test(text)) return false;
+
+    // Rule 5: Skip short non-heading text (< MIN_TRANSLATE_LENGTH chars)
+    const tag = element.tagName;
+    const isHeading = tag === 'H1' || tag === 'H2' || tag === 'H3' ||
+                      tag === 'H4' || tag === 'H5' || tag === 'H6';
+    if (!isHeading && text.length < CT.MIN_TRANSLATE_LENGTH) return false;
+
+    // Rule 6: Skip text that is > 50% CJK characters (already in target language)
+    const cjkMatches = text.match(CT.CJK_PATTERN);
+    if (cjkMatches && cjkMatches.length / text.length > 0.5) return false;
+
+    // Rule 7: Skip short byline/attribution text with relative time
+    // e.g. "Yahoo Finance · 3h ago", "Bloomberg · 32m ago", "Reuters · 1h ago"
+    if (text.length < 80) {
+      if (/\d+\s*(sec|min|hour|hr|day|week|month|year|[mhd])\w*\.?\s*ago/i.test(text)) return false;
+      if (/[·•|]\s*\d+\s*[mhd]\s*$/i.test(text)) return false;
+    }
+
+    return true;
+  },
+
+  /**
    * Check if an element contains any block-level descendants with text.
    * Looks through inline wrappers (like <a>, <span>) to find nested blocks.
    */
@@ -74,8 +161,9 @@ const CTDom = {
     };
 
     walk(root);
-    console.log('[Chrome Translate] Found', blocks.length, 'text blocks');
-    return blocks;
+    const filtered = blocks.filter(b => CTDom._shouldTranslate(b.element, b.text));
+    console.log('[Chrome Translate] Found', blocks.length, 'text blocks,', filtered.length, 'after filtering');
+    return filtered;
   },
 
   /**
@@ -84,12 +172,22 @@ const CTDom = {
   insertTranslation(sourceElement, translatedText, id) {
     CTDom.removeTranslation(sourceElement);
 
+    // Use inline class for nav context or short text in nav-like areas
+    const useInline = CTDom._isInNavContext(sourceElement);
     const el = document.createElement('span');
-    el.className = CT.CLS_TRANSLATED;
+    el.className = useInline ? CT.CLS_TRANSLATED_INLINE : CT.CLS_TRANSLATED;
     el.setAttribute(CT.ATTR_CT_ID, id);
     el.textContent = translatedText;
 
     sourceElement.setAttribute(CT.ATTR_TRANSLATED, id);
+
+    // Copy source element's font properties so translation matches its visual style
+    // (e.g. headings stay large+bold, body text stays normal size)
+    try {
+      const computed = window.getComputedStyle(sourceElement);
+      el.style.setProperty('font-size', computed.fontSize, 'important');
+      el.style.setProperty('font-weight', computed.fontWeight, 'important');
+    } catch (e) { /* ignore */ }
 
     const tag = sourceElement.tagName;
     const parentTag = sourceElement.parentElement ? sourceElement.parentElement.tagName : '';
@@ -110,15 +208,14 @@ const CTDom = {
   removeTranslation(sourceElement) {
     const id = sourceElement.getAttribute(CT.ATTR_TRANSLATED);
     if (!id) return;
-    const existing = document.querySelector(
-      `.${CT.CLS_TRANSLATED}[${CT.ATTR_CT_ID}="${id}"]`
-    );
+    const selector = `.${CT.CLS_TRANSLATED}[${CT.ATTR_CT_ID}="${id}"], .${CT.CLS_TRANSLATED_INLINE}[${CT.ATTR_CT_ID}="${id}"]`;
+    const existing = document.querySelector(selector);
     if (existing) existing.remove();
     sourceElement.removeAttribute(CT.ATTR_TRANSLATED);
   },
 
   removeAllTranslations() {
-    document.querySelectorAll(`.${CT.CLS_TRANSLATED}`).forEach(el => el.remove());
+    document.querySelectorAll(`.${CT.CLS_TRANSLATED}, .${CT.CLS_TRANSLATED_INLINE}`).forEach(el => el.remove());
     document.querySelectorAll(`[${CT.ATTR_TRANSLATED}]`).forEach(el => {
       el.removeAttribute(CT.ATTR_TRANSLATED);
     });
