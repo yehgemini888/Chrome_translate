@@ -8,6 +8,8 @@ const CTTranslator = {
   _mutationObserver: null,
   _pendingNodes: [],
   _mutationTimer: null,
+  _scrollHandler: null,
+  _scrollTimer: null,
 
   /**
    * Translate the current page. Extracts text pieces, sends for translation,
@@ -183,14 +185,38 @@ const CTTranslator = {
     this._mutationObserver = new MutationObserver((mutations) => {
       if (!this._translated) return;
 
+      // Collect parent elements that lost their translations (React reconciliation)
+      const retranslateTargets = new Set();
+
       mutations.forEach(mutation => {
+        // Existing: collect newly added element nodes
         mutation.addedNodes.forEach(node => {
           if (node.nodeType === 1 && !CT.SKIP_TAGS.has(node.tagName) &&
             !(node.className && typeof node.className === 'string' &&
-              node.className.indexOf('ct-') !== -1)) {
+              node.className.indexOf('ct-') !== -1) &&
+            !(node.hasAttribute && node.hasAttribute(CT.ATTR_CT_INJECTED))) {
             this._pendingNodes.push(node);
           }
         });
+
+        // New: detect when React/framework removes our injected wrappers
+        mutation.removedNodes.forEach(node => {
+          if (node.nodeType === 1 && node.hasAttribute &&
+            node.hasAttribute(CT.ATTR_CT_INJECTED)) {
+            // Our wrapper was removed — queue the parent for re-translation
+            const target = mutation.target;
+            if (target && target.nodeType === 1 && !CT.SKIP_TAGS.has(target.tagName)) {
+              retranslateTargets.add(target);
+            }
+          }
+        });
+      });
+
+      // Queue parents that lost their translations
+      retranslateTargets.forEach(target => {
+        if (this._pendingNodes.indexOf(target) === -1) {
+          this._pendingNodes.push(target);
+        }
       });
 
       if (this._pendingNodes.length > 0 && !this._mutationTimer) {
@@ -199,6 +225,25 @@ const CTTranslator = {
     });
 
     this._mutationObserver.observe(document.body, { childList: true, subtree: true });
+
+    // Scroll-based safety net: when user stops scrolling, re-scan for missing
+    // translations. This catches ALL cases where React/framework silently
+    // re-renders content — regardless of the specific DOM mutation pattern.
+    this._scrollHandler = () => {
+      if (!this._translated || this._isTranslating) return;
+      if (this._scrollTimer) clearTimeout(this._scrollTimer);
+      this._scrollTimer = setTimeout(() => {
+        this._scrollTimer = null;
+        // Push document.body for a full re-scan
+        if (this._pendingNodes.indexOf(document.body) === -1) {
+          this._pendingNodes.push(document.body);
+        }
+        if (!this._mutationTimer) {
+          this._mutationTimer = setTimeout(() => this._translatePendingNodes(), 0);
+        }
+      }, 600);
+    };
+    window.addEventListener('scroll', this._scrollHandler, { passive: true });
   },
 
   /**
@@ -255,6 +300,11 @@ const CTTranslator = {
         }
       }
 
+      // Pause observer to prevent self-triggering loop during DOM writes
+      if (this._mutationObserver) {
+        this._mutationObserver.disconnect();
+      }
+
       let count = 0;
       const ts = Date.now();
       allPieces.forEach((piece, i) => {
@@ -263,6 +313,12 @@ const CTTranslator = {
           count++;
         }
       });
+
+      // Resume observer and discard any mutations caused by our own DOM writes
+      if (this._mutationObserver) {
+        this._mutationObserver.observe(document.body, { childList: true, subtree: true });
+        this._mutationObserver.takeRecords();
+      }
 
       if (count > 0) {
         console.log(`[Chrome Translate] Dynamically translated ${count} new pieces`);
@@ -283,6 +339,14 @@ const CTTranslator = {
     if (this._mutationTimer) {
       clearTimeout(this._mutationTimer);
       this._mutationTimer = null;
+    }
+    if (this._scrollHandler) {
+      window.removeEventListener('scroll', this._scrollHandler);
+      this._scrollHandler = null;
+    }
+    if (this._scrollTimer) {
+      clearTimeout(this._scrollTimer);
+      this._scrollTimer = null;
     }
     this._pendingNodes = [];
   },

@@ -42,12 +42,13 @@ const CTYouTube = {
   async _onSubtitlesReceived(payload) {
     const { subtitles, videoId, language } = payload;
 
-    // Skip if it's the same video subtitles we already translated
-    if (videoId && videoId === this._currentVideoId && this._translationMap.size > 0) {
+    // Skip if it's the same video AND same language we already translated
+    if (videoId === this._currentVideoId && language === this._currentLanguage && this._translationMap.size > 0) {
       return;
     }
 
     this._currentVideoId = videoId;
+    this._currentLanguage = language;
     this._translationMap.clear();
 
     // Skip if subtitles are already in target language

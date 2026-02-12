@@ -70,7 +70,24 @@
       if (location.href === lastUrl) return;
       lastUrl = location.href;
 
-      // Reset translation state
+      // Check if translated content still exists in DOM.
+      // If yes → infinite scroll (Yahoo News style), keep translations alive.
+      // If no  → true SPA navigation (page replaced), reset everything.
+      const hasTranslatedContent = document.querySelector(`[${CT.ATTR_TRANSLATED}]`);
+
+      if (hasTranslatedContent) {
+        // Infinite scroll — keep translations and observer running.
+        // Just ensure the floating button still exists in the DOM.
+        setTimeout(() => {
+          if (!document.body.contains(CTFloatingButton._btn)) {
+            CTFloatingButton._btn = null;
+            CTFloatingButton.create(onButtonClick);
+          }
+        }, 600);
+        return;
+      }
+
+      // True SPA navigation — content was replaced, reset state
       CTTranslator._stopObserving();
       CTTranslator._translated = false;
       CTTranslator._isTranslating = false;

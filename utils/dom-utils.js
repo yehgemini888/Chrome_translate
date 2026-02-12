@@ -18,8 +18,10 @@ const CTDom = {
     if (node.getAttribute('contenteditable') === 'true') return true;
     // Our own injected elements (Strategy A: data attribute)
     if (node.hasAttribute(CT.ATTR_CT_INJECTED)) return true;
-    // Already translated parent
-    if (node.hasAttribute(CT.ATTR_TRANSLATED)) return true;
+    // NOTE: data-ct-translated is NOT checked here. The filter phase in
+    // extractPieces() handles stale markers by verifying if translation
+    // spans still exist. This allows re-translation when React removes
+    // our injected elements during reconciliation.
     return false;
   },
 
@@ -267,8 +269,7 @@ const CTDom = {
       // Replacing the text node is the safest bet.
 
       const wrapper = document.createElement('span');
-      // Style wrapper to be transparent/inline
-      // wrapper.style.all = 'inherit'; // risky
+      wrapper.setAttribute(CT.ATTR_CT_INJECTED, 'true');
 
       // 1. Original text
       const originalText = document.createTextNode(node.textContent);
