@@ -52,12 +52,15 @@
     }
   }
 
-  // Initialize floating button
-  CTFloatingButton.create(onButtonClick);
+  // Initialize floating button (only for non-YouTube pages)
+  if (!isYouTube) {
+    CTFloatingButton.create(onButtonClick);
+  }
 
   // Initialize YouTube subtitle handler if on YouTube
   if (isYouTube) {
     CTYouTube.init();
+    CTYouTubeButton.init();
   }
 
   // --- SPA Navigation Detection ---
@@ -126,12 +129,22 @@
       if (changes[CT.STORAGE_ENABLED].newValue === false) {
         // Disable: remove translations and button
         CTTranslator.removeTranslations();
-        CTFloatingButton.destroy();
-        if (isYouTube) CTYouTube.destroy();
+        if (!isYouTube) {
+          CTFloatingButton.destroy();
+        }
+        if (isYouTube) {
+          CTYouTube.destroy();
+          CTYouTubeButton.destroy();
+        }
       } else {
         // Re-enable: recreate button
-        CTFloatingButton.create();
-        if (isYouTube) CTYouTube.init();
+        if (!isYouTube) {
+          CTFloatingButton.create();
+        }
+        if (isYouTube) {
+          CTYouTube.init();
+          CTYouTubeButton.init();
+        }
       }
     }
   });

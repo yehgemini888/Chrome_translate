@@ -22,6 +22,7 @@
         "content/floating-button.js",
         "content/translator.js",
         "content/youtube.js",
+        "content/youtube-player-button.js",
         "content/content.js"
       ],
       "css": ["content/content.css"],

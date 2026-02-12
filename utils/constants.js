@@ -10,6 +10,9 @@ const CT = Object.freeze({
   // Storage keys (chrome.storage.local)
   STORAGE_TARGET_LANG: 'ct_target_lang',
   STORAGE_ENABLED: 'ct_enabled',
+  STORAGE_YT_SUB_SCALE: 'ct_yt_sub_scale',   // subtitle font scale (1.0 = same as original)
+  STORAGE_YT_SUB_COLOR: 'ct_yt_sub_color',   // subtitle color hex
+  STORAGE_YT_SUB_OFFSET: 'ct_yt_sub_offset', // subtitle time offset in ms (negative = earlier)
 
   // Cache prefix (chrome.storage.session)
   CACHE_PREFIX: 'cache:',

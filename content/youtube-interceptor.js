@@ -59,6 +59,7 @@
   // ─── Process subtitle responses ──────────────────────────
 
   async function processTimedTextResponse(response, url) {
+    console.log('[CT Interceptor] Processing timedtext response:', url);
     const contentType = response.headers.get('content-type') || '';
     let data;
 
@@ -78,8 +79,13 @@
     if (data) {
       const subtitles = normalizeSubtitles(data, url);
       if (subtitles && subtitles.length > 0) {
+        console.log('[CT Interceptor] Normalized subtitles:', subtitles.length);
         postSubtitles(subtitles, url);
+      } else {
+        console.log('[CT Interceptor] No subtitles found after normalization');
       }
+    } else {
+      console.log('[CT Interceptor] Failed to parse subtitle data');
     }
   }
 
@@ -149,15 +155,16 @@
     const urlObj = new URL(url, window.location.origin);
     const lang = urlObj.searchParams.get('lang') || urlObj.searchParams.get('tlang') || 'unknown';
 
-    window.postMessage({
-      type: CT_MSG_TYPE,
-      payload: {
+    console.log('[CT Interceptor] Posting subtitles:', subtitles.length, 'items, language:', lang);
+
+    document.dispatchEvent(new CustomEvent('CT_SUBTITLES_READY', {
+      detail: {
         subtitles: subtitles,
         language: lang,
         videoId: urlObj.searchParams.get('v') || extractVideoId(),
         timestamp: Date.now()
       }
-    }, '*');
+    }));
   }
 
   function extractVideoId() {
@@ -166,5 +173,5 @@
   }
 
   // Signal that interceptor is ready
-  window.postMessage({ type: 'CT_INTERCEPTOR_READY' }, '*');
+  document.dispatchEvent(new CustomEvent('CT_INTERCEPTOR_READY'));
 })();

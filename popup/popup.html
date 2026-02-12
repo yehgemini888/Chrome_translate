@@ -41,6 +41,32 @@
       </select>
     </div>
 
+    <!-- YouTube Subtitle Settings -->
+    <div class="setting-group">
+      <label class="setting-label">YouTube 字幕樣式</label>
+      <div class="sub-row">
+        <span class="sub-label">譯文大小</span>
+        <div class="range-wrap">
+          <input type="range" id="ytSubScale" min="0.8" max="2.0" step="0.1" value="1.0">
+          <span class="range-value" id="ytSubScaleValue">1.0x</span>
+        </div>
+      </div>
+      <div class="sub-row">
+        <span class="sub-label">譯文顏色</span>
+        <div class="color-options" id="ytSubColorOptions">
+          <button class="color-btn active" data-color="#ffffff" style="background:#ffffff" title="白色"></button>
+          <button class="color-btn" data-color="#ffd700" style="background:#ffd700" title="金黃色"></button>
+          <button class="color-btn" data-color="#7dd3fc" style="background:#7dd3fc" title="淺藍色"></button>
+          <button class="color-btn" data-color="#86efac" style="background:#86efac" title="淺綠色"></button>
+          <input type="color" id="ytSubColorCustom" class="color-custom" value="#ffffff" title="自訂顏色">
+        </div>
+      </div>
+      <div class="preview-box" id="ytSubPreview">
+        <span class="preview-original">Hello, world!</span>
+        <span class="preview-translated" id="ytSubPreviewText">你好，世界！</span>
+      </div>
+    </div>
+
     <!-- Status -->
     <div class="setting-group">
       <div class="status-box">
