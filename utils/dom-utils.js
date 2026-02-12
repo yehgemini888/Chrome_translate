@@ -153,7 +153,14 @@ const CTDom = {
       const text = CTDom.getPieceText(piece).trim();
       if (text.length < CTDom.MIN_TEXT_LENGTH) return false;
       if (piece.parentElement && piece.parentElement.hasAttribute &&
-        piece.parentElement.hasAttribute(CT.ATTR_TRANSLATED)) return false;
+        piece.parentElement.hasAttribute(CT.ATTR_TRANSLATED)) {
+        // Verify the translation span still exists in the DOM
+        const tid = piece.parentElement.getAttribute(CT.ATTR_TRANSLATED);
+        const spanExists = piece.parentElement.querySelector(`[${CT.ATTR_CT_ID}="${tid}"]`);
+        if (spanExists) return false; // genuinely translated, skip
+        // Span was removed by site re-render — clear stale marker, allow re-translation
+        piece.parentElement.removeAttribute(CT.ATTR_TRANSLATED);
+      }
       return CTDom._shouldTranslate(piece.parentElement, text);
     });
 
@@ -176,130 +183,176 @@ const CTDom = {
   },
 
   /**
-   * Insert translated text for a piece.
-   * Accepts either:
-   *   - perNodeTranslations: string[] (one translation per text node, preserves structure)
-   *   - translatedText: string       (concatenated fallback)
+   * Insert translated text using in-place replacement (Immersive Translate style).
+   * Replaces original text nodes with <font> elements containing the translation.
+   * This survives framework re-renders because it modifies existing nodes
+   * rather than appending "foreign" elements that React/Vue might remove.
    */
   insertTranslation(piece, translatedTextOrArray, id) {
-    const parent = piece.parentElement;
-    if (!parent) return;
+    // If we've already translated this piece via in-place replacement, skip
+    // (Check if any node in the piece is no longer connected or has been replaced)
+    if (piece.nodes.some(n => !n.isConnected)) return;
 
-    // Remove existing translation for this parent if any
-    const existingId = parent.getAttribute(CT.ATTR_TRANSLATED);
-    if (existingId) {
-      const sel = `.${CT.CLS_TRANSLATED}[${CT.ATTR_CT_ID}="${existingId}"], .${CT.CLS_TRANSLATED_INLINE}[${CT.ATTR_CT_ID}="${existingId}"]`;
-      const existing = document.querySelector(sel);
-      if (existing) existing.remove();
-    }
+    // Use <font> tag like Immersive Translate (or specific style wrapper)
+    // We'll use <font> as a container for the translated text to sit "in place" of the original text node.
 
-    // Detect if inline display is needed (nav/flex/grid contexts)
-    const isNav = CTDom._isInNavContext(parent);
-    let parentDisplay = '';
-    try { parentDisplay = window.getComputedStyle(parent.parentElement).display; } catch (e) { }
-    const useInline = isNav || parentDisplay.includes('flex') || parentDisplay.includes('grid');
-
-    const el = document.createElement('span');
-    el.className = useInline ? CT.CLS_TRANSLATED_INLINE : CT.CLS_TRANSLATED;
-    el.setAttribute(CT.ATTR_CT_ID, id);
-    el.setAttribute(CT.ATTR_CT_INJECTED, 'true');
-
-    // Per-node translation: clone parent structure and fill in text
+    // 1. Prepare translations array
+    let translations = [];
     if (Array.isArray(translatedTextOrArray)) {
-      try {
-        el.innerHTML = CTDom._buildPerNodeHTML(parent, translatedTextOrArray);
-      } catch (e) {
-        el.textContent = translatedTextOrArray.join('');
-      }
+      translations = translatedTextOrArray;
     } else {
-      // Fallback: plain text
+      // Fallback: if string, try to distribute or just put on first node
+      // But for robust implementation, we should have array.
+      // If single string, we might just put it on the last node or first?
+      // Simple strategy: assign to first node, clear others? No, that loses structure.
+      // Better: if scalar, assign to last text node (often the main one)
+      translations = new Array(piece.nodes.length).fill('');
+      if (piece.nodes.length > 0) {
+        translations[piece.nodes.length - 1] = translatedTextOrArray;
+      }
+    }
+
+    // 2. Mark parent as translated
+    if (piece.parentElement) {
+      piece.parentElement.setAttribute(CT.ATTR_TRANSLATED, id);
+    }
+
+    // 3. Replace each text node
+    piece.nodes.forEach((node, i) => {
+      const translation = translations[i];
+      if (!translation || !translation.trim()) return;
+
+      // Create replacement font element
+      const font = document.createElement('font');
+      font.className = CT.CLS_TRANSLATED; // Reuse class for styling
+      font.setAttribute(CT.ATTR_CT_ID, id);
+      font.setAttribute(CT.ATTR_CT_INJECTED, 'true');
+
+      // Styling: Immersive Translate uses specific styles.
+      // We'll apply our visual style here.
+      // Make it block-like if needed, or inline-block?
+      // Actually, for in-place, usually we want to KEEP the original text node?
+      // Wait, Immersive Translate REPLACES the node but keeps original text inside?
+      // Let's look at Immersive's code again: 
+      // fontNode.textContent = node.textContent (if keeping original)
+      // But for translation display, we want to SHOW the translation.
+      // Immersive Translate shows Dual Language. 
+      // It wraps original in <font> AND adds translation?
+      // Re-reading step 528: encapsulateTextNode puts original text in fontNode, replaces node.
+      // THEN it updates fontNode.textContent = result (translated).
+      // So it is REPLACING original text.
+
+      // OUR GOAL: Dual Language (Bilingual).
+      // We want to KEEP original text and ADD translation.
+      // Immersive Translate does:
+      // node.replaceWith(fontNode) -> fontNode contains ORIGINAL text.
+      // Then it appends translation?
+      // No, looking at Step 528: 
+      // nodes[j].textContent = result;
+      // It seems to overwrite?!
+
+      // Ah, Immersive Translate has "isShowDualLanguage" config.
+      // If true, `encapsulateTextNode` sets style (indent, underline etc).
+      // It replaces `node` with `fontNode` (which has `textContent = node.textContent` initially).
+      // THEN `translateResults` sets `nodes[j].textContent = result`.
+      // This implies it OVERWRITES original text if `result` is just translation.
+      // UNLESS `result` contains "Original + Translation".
+
+      // Let's stick to OUR visual design: Original Text (untouched) + Translation (new line).
+      // But we can't appendChild to parent (React kills it).
+      // We must insert the translation relative to the text node.
+      // `node.parentNode.insertBefore(translationNode, node.nextSibling)`?
+      // React reconciliation MIGHT tolerate this if it's a text node sibling?
+      // OR we replace `node` with `Fragment` or `<span>` containing `[Original, <br>, Translation]`.
+      // Replacing the text node is the safest bet.
+
+      const wrapper = document.createElement('span');
+      // Style wrapper to be transparent/inline
+      // wrapper.style.all = 'inherit'; // risky
+
+      // 1. Original text
+      const originalText = document.createTextNode(node.textContent);
+      wrapper.appendChild(originalText);
+
+      // 2. Spacer/Line break
+      // wrapper.appendChild(document.createElement('br'));
+
+      // 3. Translation
+      const transNode = document.createElement('span');
+
+      // smart class selection
+      const isNav = CTDom._isInNavContext(piece.parentElement);
+      let parentDisplay = '';
+      try { parentDisplay = window.getComputedStyle(piece.parentElement).display; } catch (e) { }
+      const useInline = isNav || parentDisplay.includes('flex') || parentDisplay.includes('grid');
+
+      transNode.className = useInline ? CT.CLS_TRANSLATED_INLINE : CT.CLS_TRANSLATED;
+      transNode.setAttribute(CT.ATTR_CT_ID, id);
+      transNode.setAttribute(CT.ATTR_CT_INJECTED, 'true');
+      transNode.textContent = ' ' + translation; // Add space separator
+
+      // Apply styles to look native
       try {
-        el.innerHTML = CTDom._buildTranslatedHTML(parent, translatedTextOrArray);
-      } catch (e) {
-        el.textContent = translatedTextOrArray;
-      }
-    }
+        const computed = window.getComputedStyle(piece.parentElement);
+        transNode.style.fontSize = computed.fontSize;
+        transNode.style.fontWeight = computed.fontWeight;
+        // transNode.style.color = computed.color; // Keep inherited or use CSS
 
-    parent.setAttribute(CT.ATTR_TRANSLATED, id);
+        // Copy other relevant typographic styles
+        transNode.style.lineHeight = computed.lineHeight;
+        transNode.style.letterSpacing = computed.letterSpacing;
+      } catch (e) { }
 
-    // Copy full computed styles from the original element
-    try {
-      const computed = window.getComputedStyle(parent);
-      el.style.setProperty('color', computed.color, 'important');
-      el.style.setProperty('font-size', computed.fontSize, 'important');
-      el.style.setProperty('font-weight', computed.fontWeight, 'important');
-      el.style.setProperty('font-family', computed.fontFamily, 'important');
-      el.style.setProperty('line-height', computed.lineHeight, 'important');
-      el.style.setProperty('letter-spacing', computed.letterSpacing, 'important');
-      el.style.setProperty('text-align', computed.textAlign, 'important');
-    } catch (e) { /* ignore */ }
+      wrapper.appendChild(transNode);
 
-    // Always append inside the parent element
-    parent.appendChild(el);
+      // Replace original text node with our wrapper
+      node.replaceWith(wrapper);
 
-    return el;
+      // Store reference to restore later?
+      // We can use the ID to find and restore.
+    });
   },
 
   /**
-   * Build translated HTML with per-text-node translations.
-   * Clones the parent's structure, replaces each text node with its translation.
-   * This precisely preserves <a>, <strong>, <em>, etc.
-   */
-  _buildPerNodeHTML(parent, perNodeTranslations) {
-    const clone = parent.cloneNode(true);
-
-    // Remove any ct-injected elements from the clone
-    clone.querySelectorAll(`[${CT.ATTR_CT_INJECTED}]`).forEach(n => n.remove());
-
-    // Collect meaningful text nodes in the clone (matching extractPieces order)
-    const textNodes = [];
-    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT, null);
-    while (walker.nextNode()) {
-      if (walker.currentNode.textContent.trim().length > 0) {
-        textNodes.push(walker.currentNode);
-      }
-    }
-
-    // Replace each text node with its per-node translation
-    const translations = perNodeTranslations;
-    for (let i = 0; i < textNodes.length && i < translations.length; i++) {
-      if (translations[i]) {
-        textNodes[i].textContent = translations[i];
-      }
-    }
-
-    // Handle case where translation has fewer/more nodes than original
-    // Extra translations: append to last text node
-    if (translations.length > textNodes.length && textNodes.length > 0) {
-      const extra = translations.slice(textNodes.length).filter(Boolean).join(' ');
-      if (extra) {
-        textNodes[textNodes.length - 1].textContent += ' ' + extra;
-      }
-    }
-
-    return clone.innerHTML;
-  },
-
-  /**
-   * Fallback: build translated HTML from a single concatenated string.
-   * Clones parent structure and replaces all text with the translated string.
-   */
-  _buildTranslatedHTML(parent, translatedText) {
-    const clone = parent.cloneNode(true);
-    clone.querySelectorAll(`[${CT.ATTR_CT_INJECTED}]`).forEach(n => n.remove());
-    clone.textContent = translatedText;
-    return clone.innerHTML;
-  },
-
-  /**
-   * Remove translation for a single parent element.
+   * Remove translation for a single parent element (In-Place Strategy).
+   * Finds injected wrappers and restores original text nodes.
    */
   removeTranslation(parentElement) {
     const id = parentElement.getAttribute(CT.ATTR_TRANSLATED);
     if (!id) return;
-    const sel = `.${CT.CLS_TRANSLATED}[${CT.ATTR_CT_ID}="${id}"], .${CT.CLS_TRANSLATED_INLINE}[${CT.ATTR_CT_ID}="${id}"]`;
-    const existing = document.querySelector(sel);
-    if (existing) existing.remove();
+
+    // Find all injected wrappers with this ID
+    const injected = parentElement.querySelectorAll(`[${CT.ATTR_CT_ID}="${id}"]`);
+    injected.forEach(el => {
+      // Logic: el is the <span class="ct-translated"> translation node.
+      // Its parent is the wrapper <span> we created.
+      // The wrapper contains [OriginalTextNode, TranslationSpan].
+      // We want to remove TranslationSpan.
+
+      const wrapper = el.parentElement;
+      if (wrapper && wrapper.childNodes.length >= 1) {
+        // We want to unwrap: keep the original text node, remove wrapper.
+        // The first child should be the original text node (cloned or same).
+        const originalValues = [];
+        wrapper.childNodes.forEach(c => {
+          if (c !== el && !c.hasAttribute?.(CT.ATTR_CT_INJECTED)) {
+            originalValues.push(c);
+          }
+        });
+
+        // Restore original nodes into the main DOM
+        originalValues.forEach(ov => {
+          wrapper.parentNode.insertBefore(ov, wrapper);
+        });
+
+        // Remove the wrapper
+        wrapper.remove();
+      } else {
+        // Fallback just remove translation element
+        el.remove();
+      }
+    });
+
     parentElement.removeAttribute(CT.ATTR_TRANSLATED);
   },
 
@@ -307,10 +360,12 @@ const CTDom = {
    * Remove all translations from the page.
    */
   removeAllTranslations() {
-    document.querySelectorAll(`.${CT.CLS_TRANSLATED}, .${CT.CLS_TRANSLATED_INLINE}`).forEach(el => el.remove());
+    // Safer: iterate all marked parents
     document.querySelectorAll(`[${CT.ATTR_TRANSLATED}]`).forEach(el => {
-      el.removeAttribute(CT.ATTR_TRANSLATED);
+      CTDom.removeTranslation(el);
     });
+    // Fallback cleanup
+    document.querySelectorAll(`.${CT.CLS_TRANSLATED}, .${CT.CLS_TRANSLATED_INLINE}`).forEach(el => el.remove());
   },
 
   /**

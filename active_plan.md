@@ -1,5 +1,5 @@
 # Chrome Translate — Active Plan
-> Version: 2.0 | Last Updated: 2026-02-12
+> Version: 2.1 | Last Updated: 2026-02-12
 
 **Overall Progress:** MVP 完成。Phase 6 進行中 — DOM 引擎 V2 重寫（修復 HTML tag 翻譯 + 版面跑掉）
 
@@ -70,25 +70,28 @@
 
 基於 Immersive Translate 原始碼分析，重寫 DOM 遍歷與翻譯注入策略。
 
-- [ ] Task 12: Text Node 級別 DOM 遍歷重寫
+- [x] Task 12: Text Node 級別 DOM 遍歷重寫
   > 重寫 `dom-utils.js`：從 Element 級 `extractTextBlocks()` 改為 Text Node 級 `extractPieces()`。
   > 核心變更：收集 `nodeType===3` 的文字節點，按 block/inline 邊界分段成 pieces。
 
-- [ ] Task 13: 翻譯注入策略重寫
-  > 重寫 `dom-utils.js` + `content.css`：從 afterend span 改為段落後翻譯行。
-  > 備份 `originalTexts[]`，翻譯後寫回 text node textContent，段落後插入翻譯行。
+- [x] Task 13: 翻譯注入策略重寫
+  > 重寫 `dom-utils.js` + `content.css`：從 afterend span 改為 **In-Place Text Node Replacement**。
+  > 抗 React Reconciliation 干擾，解決捲動翻譯消失問題。
 
-- [ ] Task 14: notranslate / contentEditable 標準支援
+- [x] Task 14: notranslate / contentEditable 標準支援
   > `dom-utils.js` 新增 `_isNoTranslateNode()`：支援 notranslate class、translate="no"、contentEditable。
 
-- [ ] Task 15: Translator 適配新資料結構
+- [x] Task 15: Translator 適配新資料結構
   > 修改 `translator.js`：從 `extractTextBlocks()` 改用 `extractPieces()`，翻譯結果寫回 text nodes。
 
-- [ ] Task 16: 動態內容 MutationObserver
+- [x] Task 16: 動態內容 MutationObserver
   > 修改 `content.js`：翻譯後啟動 MutationObserver 監聽新增節點，每 2 秒批次翻譯。
 
-- [ ] Task 17: 手動驗證 — BBC / HN / Google / GitHub 測試
+- [x] Task 17: 手動驗證 — BBC / HN / Google / GitHub 測試
   > 驗證 HTML tag 不再被翻譯、版面不跑掉、翻譯覆蓋率、恢復原文。
+
+- [x] Task 18: 解決 React Reconciliation 導致捲動翻譯消失問題
+  > 實作 In-Place Replacement 策略，修復 Yahoo Finance 等 SPA 網站相容性。
 
 ---
 
@@ -96,14 +99,15 @@
 
 | 測試項目 | V1 結果 | V2 結果 |
 |----------|---------|---------|
-| chrome://extensions 載入 | ✅ 通過 | ⬜ 待測 |
-| 懸浮按鈕顯示 | ✅ 通過 | ⬜ 待測 |
-| BBC News 網頁翻譯 | ✅ 168/188 段 (89%) | ⬜ 待測 |
-| HTML tag 不出現在翻譯文字 | ❌ 失敗 | ⬜ 待測 |
-| 翻譯後版面不跑掉 | ❌ 失敗 | ⬜ 待測 |
-| notranslate 標準支援 | ❌ 未實作 | ⬜ 待測 |
-| Hacker News 翻譯 | ✅ 通過 | ⬜ 待測 |
+| chrome://extensions 載入 | ✅ 通過 | ✅ 通過 |
+| 懸浮按鈕顯示 | ✅ 通過 | ✅ 通過 |
+| BBC News 網頁翻譯 | ✅ 168/188 段 (89%) | ✅ 通過 |
+| HTML tag 不出現在翻譯文字 | ❌ 失敗 | ✅ 通過 (Text Node Travel) |
+| 翻譯後版面不跑掉 | ❌ 失敗 | ✅ 通過 (In-Place Replacement) |
+| notranslate 標準支援 | ❌ 未實作 | ✅ 通過 |
+| Hacker News 翻譯 | ✅ 通過 | ✅ 通過 |
 | YouTube 雙語字幕 | ⬜ 待測 | ⬜ 待測 |
+| React/SPA 捲動持久性 | ❌ 失敗 (V1) | ✅ 通過 (V2.1) |
 
 ---
 

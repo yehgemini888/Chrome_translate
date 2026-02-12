@@ -1,7 +1,9 @@
 # Chrome Translate — Technical Specification
-> Version: 1.1 | Last Updated: 2026-02-11
+> Version: 2.0 | Last Updated: 2026-02-12
 
 ## 1. Project Overview
+
+**notranslate 標準支援：**
 
 | Item | Detail |
 |------|--------|
@@ -326,15 +328,21 @@ getAllNodes(node):
      - 段落字符累計超過 PIECE_MAX_CHARS → 強制切割新段落
 ```
 
-**翻譯注入策略：**
+**翻譯注入策略 (V2.1 - React Reconciliation Safe)：**
 
 ```
 翻譯前：備份所有 text nodes 的 textContent → piece.originalTexts[]
 翻譯後：
-  1. 每個 piece 的 text nodes 依 index 寫回翻譯結果
-  2. 在 piece.parentElement 後方插入 <span class="ct-translated"> 翻譯行
-  3. 原文結構 (strong, a, em 等) 完整保留不受影響
-恢復：從 originalTexts[] 恢復 text nodes 的 textContent
+  1. 每個 text node 進行 **In-Place Replacement** (原地替換)
+  2. 結構：`node.replaceWith(wrapper)`
+     wrapper = <span>
+       [Original Text Node]
+       <span class="ct-translated"> 翻譯結果 </span>
+     </span>
+  3. 優點：
+     - 原文結構完整保留
+     - **抗 React/Vue 干擾**：框架視為節點替換而非異物插入，re-render 時不會移除翻譯
+恢復：移除 wrapper，將 original text node 移回父層，移除 wrapper 元素
 ```
 
 **notranslate 標準支援：**
