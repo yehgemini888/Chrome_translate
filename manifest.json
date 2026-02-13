@@ -21,6 +21,7 @@
         "utils/dom-utils.js",
         "content/floating-button.js",
         "content/translator.js",
+        "content/youtube-preprocessor.js",
         "content/youtube.js",
         "content/youtube-player-button.js",
         "content/content.js"

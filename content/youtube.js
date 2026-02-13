@@ -1,18 +1,19 @@
 /* Chrome Translate — YouTube Dual Subtitle Renderer */
 /* Runs in ISOLATED world — has chrome.* API access */
 /*
- * Architecture V4: Hybrid — YouTube timing + our overlay.
- * - YouTube captions remain active but visually hidden (opacity: 0)
- * - We READ YouTube's .ytp-caption-segment to know what's on screen (read-only)
- * - We render original + translation in our own #ct-yt-overlay
- * - Perfect timing sync (YouTube decides when to show each caption)
- * - No layout interference (we never modify YouTube's caption DOM)
+ * Architecture V5.1: Preprocessed Sentences + Time-Primary Sync.
+ * - Interceptor captures raw timedtext events (may be ASR word-level fragments)
+ * - Preprocessor merges fragments into complete sentences (better translation quality)
+ * - Preprocessor fills time gaps so findByTime always matches
+ * - Time-Primary sync: video.currentTime is the single source of truth
+ * - MutationObserver only detects "captions visible or not"
+ * - YouTube captions remain active but hidden (opacity: 0)
  */
 'use strict';
 
 const CTYouTube = {
-  _translationMap: new Map(),  // normalizedText -> translatedText
-  _fullSubtitles: [],          // [{text, translation}] — full sentences from timedtext
+  _translationMap: new Map(),  // normalizedText -> translatedText (fallback)
+  _sentences: [],              // [{text, translation, startMs, endMs}] — preprocessed sentences
   _overlay: null,
   _observer: null,
   _currentVideoId: null,
@@ -23,7 +24,7 @@ const CTYouTube = {
   _isEnabled: true,
   _subScale: 1.0,
   _subColor: '#ffffff',
-  _currentSubIndex: -1,        // index of currently displayed full subtitle
+  _currentSubIndex: -1,        // index of currently displayed sentence
 
   init() {
     if (this._initialized) return;
@@ -108,19 +109,23 @@ const CTYouTube = {
     observeTarget();
   },
 
+  // ─── Sync Engine V5.1: Time-Primary ─────────────────────
+
   /**
    * Called by MutationObserver when YouTube's caption DOM changes.
-   * Uses video.currentTime to find the correct full subtitle by timestamp.
+   * Only checks if YouTube is showing captions (visibility gate).
+   * Actual sentence selection is always done by currentTime.
    */
   _syncFromYouTube() {
-    if (!this._isEnabled) return;
+    if (!this._isEnabled || this._sentences.length === 0) return;
 
-    // Check if YouTube is showing any caption
+    // Visibility gate: is YouTube showing any caption?
     const segments = document.querySelectorAll('.ytp-caption-segment');
     const hasCaption = segments.length > 0 &&
       Array.from(segments).some(s => s.textContent.trim());
 
     if (!hasCaption) {
+      // YouTube hid captions — hide our overlay too
       if (this._currentSubIndex !== -1) {
         this._currentSubIndex = -1;
         if (this._overlay) {
@@ -131,44 +136,36 @@ const CTYouTube = {
       return;
     }
 
-    // Primary: time-based lookup (accurate, avoids text matching ambiguity)
-    const video = document.querySelector('video');
-    if (video && this._fullSubtitles.length > 0) {
-      const timeMs = video.currentTime * 1000;
-      const matchIndex = this._findSubtitleByTime(timeMs);
-      if (matchIndex >= 0) {
-        if (matchIndex !== this._currentSubIndex) {
-          this._currentSubIndex = matchIndex;
-          const sub = this._fullSubtitles[matchIndex];
-          this._renderOverlay(sub.text, sub.translation);
-        }
-        return;
-      }
-    }
-
-    // Fallback: text-based matching (when no timing data or no time match)
-    const partialText = Array.from(segments).map(s => s.textContent).join(' ').trim();
-    const normalized = this._normalizeText(partialText);
-    let translation = this._translationMap.get(normalized);
-    if (!translation) translation = this._fuzzyMatch(normalized);
-    this._renderOverlay(partialText, translation);
+    // Captions visible — use currentTime to find the right sentence
+    this._syncByTime();
   },
 
   /**
-   * Find the subtitle at a given timestamp (binary-style linear scan).
-   * Returns index in _fullSubtitles, or -1 if no match.
+   * Core sync: use video.currentTime to find and display the correct sentence.
+   * Preprocessor's gap-filling ensures findByTime almost always matches.
    */
-  _findSubtitleByTime(timeMs) {
-    for (let i = 0; i < this._fullSubtitles.length; i++) {
-      const sub = this._fullSubtitles[i];
-      if (timeMs >= sub.startMs && timeMs < sub.endMs) {
-        return i;
+  _syncByTime() {
+    const video = document.querySelector('video');
+    if (!video) return;
+
+    const timeMs = video.currentTime * 1000;
+    const matchIndex = CTYouTubePreprocessor.findByTime(this._sentences, timeMs);
+
+    if (matchIndex >= 0 && matchIndex !== this._currentSubIndex) {
+      this._currentSubIndex = matchIndex;
+      const sub = this._sentences[matchIndex];
+      this._renderOverlay(sub.text, sub.translation);
+    } else if (matchIndex === -1 && this._currentSubIndex >= 0) {
+      // Past all sentences or before first — clear
+      this._currentSubIndex = -1;
+      if (this._overlay) {
+        this._overlay.innerHTML = '';
+        this._overlay.style.display = 'none';
       }
     }
-    return -1;
   },
 
-  // ─── Proactive time-based display ──────────────────────
+  // ─── Proactive time-based sync ─────────────────────────
 
   _startTimeUpdateListener() {
     const tryAttach = () => {
@@ -184,27 +181,13 @@ const CTYouTube = {
     tryAttach();
   },
 
+  /**
+   * Proactive sync on every timeupdate (~4Hz).
+   * Catches sentence changes even if MutationObserver is delayed.
+   */
   _onTimeUpdate() {
-    if (!this._isEnabled || this._fullSubtitles.length === 0) return;
-
-    const video = document.querySelector('video');
-    if (!video) return;
-
-    const timeMs = video.currentTime * 1000;
-    const matchIndex = this._findSubtitleByTime(timeMs);
-
-    if (matchIndex === this._currentSubIndex) return;
-    this._currentSubIndex = matchIndex;
-
-    if (matchIndex >= 0) {
-      const sub = this._fullSubtitles[matchIndex];
-      this._renderOverlay(sub.text, sub.translation);
-    } else {
-      if (this._overlay) {
-        this._overlay.innerHTML = '';
-        this._overlay.style.display = 'none';
-      }
-    }
+    if (!this._isEnabled || this._sentences.length === 0) return;
+    this._syncByTime();
   },
 
   // ─── Rendering ───────────────────────────────────────────
@@ -267,33 +250,38 @@ const CTYouTube = {
   async _onSubtitlesReceived(payload) {
     const { subtitles, videoId, language } = payload;
 
-    if (videoId === this._currentVideoId && language === this._currentLanguage && this._translationMap.size > 0) {
+    if (videoId === this._currentVideoId && language === this._currentLanguage && this._sentences.length > 0) {
       return;
     }
 
     this._currentVideoId = videoId;
     this._currentLanguage = language;
     this._translationMap.clear();
-    this._fullSubtitles = subtitles.map(s => ({
+    this._currentSubIndex = -1;
+
+    // ── Preprocess: merge ASR fragments into complete sentences ──
+    const merged = CTYouTubePreprocessor.mergeSentences(subtitles);
+    this._sentences = merged.map(s => ({
       text: s.text,
       translation: null,
-      startMs: s.startMs || 0,
-      endMs: (s.startMs || 0) + (s.durationMs || 5000)
+      startMs: s.startMs,
+      endMs: s.endMs
     }));
-    this._currentSubIndex = -1;
+
+    console.log(`[CT YouTube] Preprocessed: ${subtitles.length} fragments → ${this._sentences.length} sentences`);
 
     const targetLang = await this._getTargetLang();
     if (this._isTargetLang(language, targetLang)) return;
 
-    console.log('[CT YouTube] Translating', subtitles.length, 'subtitles:', language, '->', targetLang);
+    console.log('[CT YouTube] Translating', this._sentences.length, 'sentences:', language, '->', targetLang);
     try {
-      await this._translateSubtitles(subtitles);
+      await this._translateSentences();
     } catch (err) {
       console.error('[CT YouTube] Translation error:', err);
     }
   },
 
-  async _translateSubtitles(subtitles) {
+  async _translateSentences() {
     if (this._isTranslating) return;
     this._isTranslating = true;
 
@@ -303,7 +291,7 @@ const CTYouTube = {
         CTYouTubeButton.setState('translating', 'YouTube 字幕翻譯中...');
       }
 
-      const texts = subtitles.map(s => s.text);
+      const texts = this._sentences.map(s => s.text);
       const targetLang = await this._getTargetLang();
       const batches = CTDom.batchTexts(texts);
       const allTranslations = new Array(texts.length).fill(null);
@@ -328,20 +316,17 @@ const CTYouTube = {
         }
       }
 
-      // Build translation map + populate _fullSubtitles translations
-      subtitles.forEach((sub, i) => {
+      // Populate sentence translations + build fallback map
+      this._sentences.forEach((sentence, i) => {
         if (allTranslations[i]) {
-          const key = this._normalizeText(sub.text);
+          sentence.translation = allTranslations[i];
+          const key = this._normalizeText(sentence.text);
           this._translationMap.set(key, allTranslations[i]);
-          // Update the corresponding _fullSubtitles entry
-          if (i < this._fullSubtitles.length) {
-            this._fullSubtitles[i].translation = allTranslations[i];
-          }
         }
       });
 
       this._isTranslating = false;
-      const count = this._translationMap.size;
+      const count = this._sentences.filter(s => s.translation).length;
       console.log(`[Chrome Translate] YouTube 字幕翻譯完成 (${count} 句)`);
       if (typeof CTYouTubeButton !== 'undefined' && CTYouTubeButton._button) {
         CTYouTubeButton.setState('done', `YouTube 字幕翻譯完成 (${count} 句)`);
@@ -391,7 +376,7 @@ const CTYouTube = {
 
   _onNavigate() {
     this._translationMap.clear();
-    this._fullSubtitles = [];
+    this._sentences = [];
     this._currentVideoId = null;
     this._isTranslating = false;
     this._currentSubIndex = -1;
@@ -450,7 +435,7 @@ const CTYouTube = {
 
   refreshTranslation() {
     this._translationMap.clear();
-    this._fullSubtitles = [];
+    this._sentences = [];
     this._currentSubIndex = -1;
     this._currentVideoId = null;
     this._currentLanguage = null;
