@@ -26,6 +26,7 @@ const CT = Object.freeze({
   MSG_TRANSLATE: 'TRANSLATE',
   MSG_TRANSLATE_HTML: 'TRANSLATE_HTML',
   MSG_TRANSLATE_RESULT: 'TRANSLATE_RESULT',
+  MSG_TRANSLATE_FULL: 'TRANSLATE_FULL',   // full-text AI segmentation + translation
 
   // YouTube interceptor -> content script
   MSG_YT_SUBTITLES: 'CT_SUBTITLES_RAW',

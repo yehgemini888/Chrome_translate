@@ -30,6 +30,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleTranslateHTML(message.payload).then(sendResponse);
       return true;
 
+    case CT.MSG_TRANSLATE_FULL:
+      handleTranslateFull(message.payload).then(sendResponse);
+      return true;
+
     default:
       return false;
   }
@@ -188,6 +192,50 @@ async function handleTranslateHTML(payload) {
     };
   } catch (e) {
     console.error('[Chrome Translate] handleTranslateHTML error:', e);
+    return {
+      type: CT.MSG_TRANSLATE_RESULT,
+      error: { message: e.message, code: e.code || 'UNKNOWN' }
+    };
+  }
+}
+
+/**
+ * Handle full-text translation with AI segmentation.
+ * Sends text as-is to Google Translate and returns per-segment results
+ * with both translated and original text preserved.
+ * @param {{ text: string, targetLang: string }} payload
+ */
+async function handleTranslateFull(payload) {
+  try {
+    const { text, targetLang } = payload;
+
+    // Check cache
+    const cached = await getCachedBatch([text]);
+    if (cached[0]) {
+      try {
+        const parsed = JSON.parse(cached[0]);
+        return {
+          type: CT.MSG_TRANSLATE_RESULT,
+          payload: { segments: parsed.segments, sourceLang: parsed.sourceLang, fromCache: true }
+        };
+      } catch (e) { /* cache corrupted, translate fresh */ }
+    }
+
+    const result = await GoogleTranslateClient.translateWithSegments(text, targetLang);
+
+    // Cache as JSON string
+    if (result.segments.length > 0) {
+      await setCacheBatch([text], [JSON.stringify(result)]);
+    }
+
+    console.log(`[Chrome Translate] Full-text translated: ${result.segments.length} segments`);
+
+    return {
+      type: CT.MSG_TRANSLATE_RESULT,
+      payload: { segments: result.segments, sourceLang: result.sourceLang, fromCache: false }
+    };
+  } catch (e) {
+    console.error('[Chrome Translate] handleTranslateFull error:', e);
     return {
       type: CT.MSG_TRANSLATE_RESULT,
       error: { message: e.message, code: e.code || 'UNKNOWN' }

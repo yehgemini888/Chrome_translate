@@ -152,6 +152,50 @@ const GoogleTranslateClient = {
   },
 
   /**
+   * Translate text and return Google's sentence-level segmentation.
+   * Unlike translate(), this preserves the original text per segment
+   * from Google's response, enabling AI-based sentence boundary detection.
+   *
+   * @param {string} text - Full text to translate (one chunk, <=4000 chars)
+   * @param {string} targetLang - Target language code
+   * @returns {Promise<{segments: Array<{translated: string, original: string}>, sourceLang: string}>}
+   */
+  async translateWithSegments(text, targetLang) {
+    const params = new URLSearchParams({
+      client: 'gtx',
+      sl: 'auto',
+      tl: targetLang,
+      dt: 't',
+      q: text
+    });
+
+    let response = await fetch(CT.GOOGLE_TRANSLATE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        await new Promise(r => setTimeout(r, 2000));
+        response = await fetch(CT.GOOGLE_TRANSLATE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString()
+        });
+        if (!response.ok) {
+          throw new TranslateError('Google 翻譯請求過於頻繁', 'RATE_LIMITED');
+        }
+      } else {
+        throw new TranslateError(`Google 翻譯錯誤: ${response.status}`, 'API_ERROR');
+      }
+    }
+
+    const data = await response.json();
+    return this._parseSegmentedResponse(data);
+  },
+
+  /**
    * Translate text nodes as HTML using <a i=N> markers (Immersive Translate technique).
    * Google's format=html endpoint preserves <a> tag positions in the translation,
    * so we can map translations back to individual text nodes (preserving links, bold, etc.).
@@ -321,6 +365,26 @@ const GoogleTranslateClient = {
     }
     const sourceLang = data[2] || '';
     return { text: translated.trim(), sourceLang };
+  },
+
+  /**
+   * Parse Google Translate response preserving per-segment original text.
+   * Google response: data[0] = [[translatedText, originalText, ...], ...]
+   */
+  _parseSegmentedResponse(data) {
+    const segments = [];
+    if (data && data[0]) {
+      for (const seg of data[0]) {
+        if (seg && (seg[0] || seg[1])) {
+          segments.push({
+            translated: (seg[0] || '').trim(),
+            original: (seg[1] || '').trim()
+          });
+        }
+      }
+    }
+    const sourceLang = data[2] || '';
+    return { segments, sourceLang };
   },
 
   _escapeHTML(str) {

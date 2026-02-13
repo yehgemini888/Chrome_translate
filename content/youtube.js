@@ -266,7 +266,50 @@ const CTYouTube = {
     this._translationMap.clear();
     this._currentSubIndex = -1;
 
-    // ── Preprocess: merge ASR fragments into complete sentences ──
+    const targetLang = await this._getTargetLang();
+    if (this._isTargetLang(language, targetLang)) return;
+
+    // ── Try AI segmentation first (Google Translate NLP) ──
+    try {
+      console.log(`[CT YouTube] AI segmentation: ${subtitles.length} fragments...`);
+      if (typeof CTYouTubeButton !== 'undefined' && CTYouTubeButton._button) {
+        CTYouTubeButton.setState('translating', 'AI 分段翻譯中...');
+      }
+
+      const sentences = await this._translateWithAISegmentation(subtitles, targetLang);
+
+      if (sentences && sentences.length > 0) {
+        this._sentences = sentences;
+
+        // Gap-fill: extend each sentence's endMs to next sentence's startMs
+        for (let i = 0; i < this._sentences.length - 1; i++) {
+          if (this._sentences[i].endMs < this._sentences[i + 1].startMs) {
+            this._sentences[i].endMs = this._sentences[i + 1].startMs;
+          }
+        }
+
+        // Build fallback translation map
+        this._sentences.forEach(s => {
+          if (s.translation) {
+            this._translationMap.set(this._normalizeText(s.text), s.translation);
+          }
+        });
+
+        const count = this._sentences.filter(s => s.translation).length;
+        console.log(`[CT YouTube] AI segmentation complete: ${subtitles.length} fragments → ${this._sentences.length} sentences (${count} translated)`);
+        if (typeof CTYouTubeButton !== 'undefined' && CTYouTubeButton._button) {
+          CTYouTubeButton.setState('done', `AI 字幕翻譯完成 (${count} 句)`);
+        }
+
+        this._currentSubIndex = -1;
+        this._syncFromYouTube();
+        return;
+      }
+    } catch (err) {
+      console.warn('[CT YouTube] AI segmentation failed, falling back to heuristic:', err.message);
+    }
+
+    // ── Fallback: heuristic segmentation + separate translation ──
     const merged = CTYouTubePreprocessor.mergeSentences(subtitles);
     this._sentences = merged.map(s => ({
       text: s.text,
@@ -275,12 +318,7 @@ const CTYouTube = {
       endMs: s.endMs
     }));
 
-    console.log(`[CT YouTube] Preprocessed: ${subtitles.length} fragments → ${this._sentences.length} sentences`);
-
-    const targetLang = await this._getTargetLang();
-    if (this._isTargetLang(language, targetLang)) return;
-
-    console.log('[CT YouTube] Translating', this._sentences.length, 'sentences:', language, '->', targetLang);
+    console.log(`[CT YouTube] Fallback: ${subtitles.length} fragments → ${this._sentences.length} sentences`);
     try {
       await this._translateSentences();
     } catch (err) {
@@ -349,6 +387,67 @@ const CTYouTube = {
       if (typeof CTYouTubeButton !== 'undefined' && CTYouTubeButton._button) {
         CTYouTubeButton.setState('error', 'YouTube 字幕翻譯失敗: ' + e.message);
       }
+    }
+  },
+
+  // ─── AI Segmentation ─────────────────────────────────────
+
+  /**
+   * Translate subtitles using Google Translate's AI segmentation.
+   * Sends larger text blocks to Google, lets Google determine sentence boundaries,
+   * then maps the segmented response back to word-level timestamps.
+   */
+  async _translateWithAISegmentation(rawFragments, targetLang) {
+    if (this._isTranslating) return null;
+    this._isTranslating = true;
+
+    try {
+      // 1. Build fragment index (char offset map)
+      const fragmentIndex = CTYouTubePreprocessor.buildFragmentIndex(rawFragments);
+      if (!fragmentIndex.joinedText) return null;
+
+      console.log(`[CT YouTube] Fragment index: ${fragmentIndex.joinedText.length} chars, ${fragmentIndex.fragments.length} fragments`);
+
+      // 2. Split into chunks (respect Google's char limit)
+      const chunks = CTYouTubePreprocessor.splitIntoChunks(fragmentIndex, CT.BATCH_MAX_CHARS);
+      console.log(`[CT YouTube] Split into ${chunks.length} chunks`);
+
+      // 3. Translate each chunk via service worker
+      const allSentences = [];
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+
+        try {
+          const response = await chrome.runtime.sendMessage({
+            type: CT.MSG_TRANSLATE_FULL,
+            payload: { text: chunk.text, targetLang }
+          });
+
+          if (response && response.error) {
+            console.error(`[CT YouTube] Chunk ${i} error:`, response.error.message);
+            continue;
+          }
+
+          if (response && response.payload && response.payload.segments) {
+            const mapped = CTYouTubePreprocessor.mapSegmentsToTimestamps(
+              response.payload.segments,
+              fragmentIndex,
+              chunk.charStart
+            );
+            allSentences.push(...mapped);
+          }
+        } catch (e) {
+          console.error(`[CT YouTube] Chunk ${i} failed:`, e.message);
+        }
+      }
+
+      // 4. Sort by startMs
+      allSentences.sort((a, b) => a.startMs - b.startMs);
+
+      return allSentences.length > 0 ? allSentences : null;
+    } finally {
+      this._isTranslating = false;
     }
   },
 
