@@ -1,11 +1,13 @@
 /* Chrome Translate — YouTube Dual Subtitle Renderer */
 /* Runs in ISOLATED world — has chrome.* API access */
 /*
- * Architecture V5.1: Preprocessed Sentences + Time-Primary Sync.
+ * Architecture V5.2: Preprocessed Sentences + RAF Time-Primary Sync.
  * - Interceptor captures raw timedtext events (may be ASR word-level fragments)
  * - Preprocessor merges fragments into complete sentences (better translation quality)
  * - Preprocessor fills time gaps so findByTime always matches
  * - Time-Primary sync: video.currentTime is the single source of truth
+ * - requestAnimationFrame (~60Hz) replaces timeupdate (~4Hz) for minimal latency
+ * - Configurable time offset (ct_yt_sub_offset) compensates ASR timestamp delay
  * - MutationObserver only detects "captions visible or not"
  * - YouTube captions remain active but hidden (opacity: 0)
  */
@@ -24,6 +26,8 @@ const CTYouTube = {
   _isEnabled: true,
   _subScale: 1.0,
   _subColor: '#ffffff',
+  _subOffset: 0,               // time offset in ms (negative = show earlier)
+  _rafId: null,                // requestAnimationFrame handle
   _currentSubIndex: -1,        // index of currently displayed sentence
 
   init() {
@@ -41,17 +45,17 @@ const CTYouTube = {
     this._loadSubtitleStyle();
 
     chrome.storage.onChanged.addListener((changes) => {
-      if (changes[CT.STORAGE_YT_SUB_SCALE] || changes[CT.STORAGE_YT_SUB_COLOR]) {
+      if (changes[CT.STORAGE_YT_SUB_SCALE] || changes[CT.STORAGE_YT_SUB_COLOR] || changes[CT.STORAGE_YT_SUB_OFFSET]) {
         this._loadSubtitleStyle().then(() => {
           this._currentSubIndex = -1;
-          this._syncFromYouTube();
+          this._syncByTime();
         });
       }
     });
 
     this._ensureOverlay();
     this._startCaptionObserver();
-    this._startTimeUpdateListener();
+    this._startRAFLoop();
   },
 
   // ─── Overlay ─────────────────────────────────────────────
@@ -143,12 +147,13 @@ const CTYouTube = {
   /**
    * Core sync: use video.currentTime to find and display the correct sentence.
    * Preprocessor's gap-filling ensures findByTime almost always matches.
+   * _subOffset shifts the lookup time (negative = subtitles appear earlier).
    */
   _syncByTime() {
     const video = document.querySelector('video');
     if (!video) return;
 
-    const timeMs = video.currentTime * 1000;
+    const timeMs = video.currentTime * 1000 - this._subOffset;
     const matchIndex = CTYouTubePreprocessor.findByTime(this._sentences, timeMs);
 
     if (matchIndex >= 0 && matchIndex !== this._currentSubIndex) {
@@ -165,29 +170,31 @@ const CTYouTube = {
     }
   },
 
-  // ─── Proactive time-based sync ─────────────────────────
-
-  _startTimeUpdateListener() {
-    const tryAttach = () => {
-      const video = document.querySelector('video');
-      if (!video) {
-        setTimeout(tryAttach, 1000);
-        return;
-      }
-      if (video._ctTimeUpdateAttached) return;
-      video._ctTimeUpdateAttached = true;
-      video.addEventListener('timeupdate', () => this._onTimeUpdate());
-    };
-    tryAttach();
-  },
+  // ─── RAF sync loop (~60Hz) ──────────────────────────────
 
   /**
-   * Proactive sync on every timeupdate (~4Hz).
-   * Catches sentence changes even if MutationObserver is delayed.
+   * Start a requestAnimationFrame loop for high-frequency time sync.
+   * ~60fps (16ms) vs timeupdate's ~4Hz (250ms) — reduces max latency by 15x.
    */
-  _onTimeUpdate() {
-    if (!this._isEnabled || this._sentences.length === 0) return;
-    this._syncByTime();
+  _startRAFLoop() {
+    if (this._rafId) return;
+
+    const tick = () => {
+      if (!this._isEnabled || this._sentences.length === 0) {
+        this._rafId = requestAnimationFrame(tick);
+        return;
+      }
+      this._syncByTime();
+      this._rafId = requestAnimationFrame(tick);
+    };
+    this._rafId = requestAnimationFrame(tick);
+  },
+
+  _stopRAFLoop() {
+    if (this._rafId) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
   },
 
   // ─── Rendering ───────────────────────────────────────────
@@ -388,7 +395,7 @@ const CTYouTube = {
 
     this._ensureOverlay();
     this._startCaptionObserver();
-    this._startTimeUpdateListener();
+    this._startRAFLoop();
   },
 
   _isTargetLang(sourceLang, targetLang) {
@@ -406,9 +413,12 @@ const CTYouTube = {
   },
 
   async _loadSubtitleStyle() {
-    const result = await chrome.storage.local.get([CT.STORAGE_YT_SUB_SCALE, CT.STORAGE_YT_SUB_COLOR]);
+    const result = await chrome.storage.local.get([
+      CT.STORAGE_YT_SUB_SCALE, CT.STORAGE_YT_SUB_COLOR, CT.STORAGE_YT_SUB_OFFSET
+    ]);
     this._subScale = result[CT.STORAGE_YT_SUB_SCALE] || 1.0;
     this._subColor = result[CT.STORAGE_YT_SUB_COLOR] || '#ffffff';
+    this._subOffset = result[CT.STORAGE_YT_SUB_OFFSET] || 0;
   },
 
   // ─── Public API ──────────────────────────────────────────
@@ -442,6 +452,7 @@ const CTYouTube = {
   },
 
   destroy() {
+    this._stopRAFLoop();
     if (this._observer) {
       this._observer.disconnect();
       this._observer = null;
