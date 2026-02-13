@@ -325,3 +325,18 @@
   border-color: #3ea6ff;
   box-shadow: 0 0 0 1px rgba(62, 166, 255, 0.4);
 }
+
+.ct-yt-offset-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.ct-yt-offset-value {
+  font-size: 12px;
+  color: #3ea6ff;
+  font-weight: 600;
+  min-width: 42px;
+  text-align: center;
+}

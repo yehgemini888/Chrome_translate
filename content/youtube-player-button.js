@@ -185,6 +185,16 @@ const CTYouTubeButton = {
           <button class="ct-yt-color-dot" data-action="color" data-color="#86efac" style="background:#86efac" title="淺綠色"></button>
         </span>
       </div>
+
+      <div class="ct-yt-dropdown-item ct-yt-offset-row">
+        <span class="ct-yt-dropdown-icon">⏱️</span>
+        <span class="ct-yt-dropdown-label">時間偏移</span>
+        <span class="ct-yt-offset-controls">
+          <button class="ct-yt-size-btn" data-action="offset-down">-</button>
+          <span class="ct-yt-offset-value">0ms</span>
+          <button class="ct-yt-size-btn" data-action="offset-up">+</button>
+        </span>
+      </div>
     `;
 
     // Add click handlers for menu items
@@ -295,6 +305,12 @@ const CTYouTubeButton = {
       case 'size-down':
         this._adjustSize(-0.1);
         return;
+      case 'offset-up':
+        this._adjustOffset(50);
+        return;
+      case 'offset-down':
+        this._adjustOffset(-50);
+        return;
     }
 
     this._closeDropdown();
@@ -336,12 +352,18 @@ const CTYouTubeButton = {
    * Load current style settings into dropdown UI.
    */
   async _loadCurrentStyle(dropdown) {
-    const result = await chrome.storage.local.get([CT.STORAGE_YT_SUB_SCALE, CT.STORAGE_YT_SUB_COLOR]);
+    const result = await chrome.storage.local.get([
+      CT.STORAGE_YT_SUB_SCALE, CT.STORAGE_YT_SUB_COLOR, CT.STORAGE_YT_SUB_OFFSET
+    ]);
     const scale = result[CT.STORAGE_YT_SUB_SCALE] || 1.0;
     const color = (result[CT.STORAGE_YT_SUB_COLOR] || '#ffffff').toLowerCase();
+    const offset = result[CT.STORAGE_YT_SUB_OFFSET] || 0;
 
     const sizeValue = dropdown.querySelector('.ct-yt-size-value');
     if (sizeValue) sizeValue.textContent = scale.toFixed(1) + 'x';
+
+    const offsetValue = dropdown.querySelector('.ct-yt-offset-value');
+    if (offsetValue) offsetValue.textContent = offset + 'ms';
 
     dropdown.querySelectorAll('.ct-yt-color-dot').forEach(dot => {
       dot.classList.toggle('active', dot.dataset.color.toLowerCase() === color);
@@ -363,6 +385,24 @@ const CTYouTubeButton = {
     if (this._dropdown) {
       const sizeValue = this._dropdown.querySelector('.ct-yt-size-value');
       if (sizeValue) sizeValue.textContent = scale.toFixed(1) + 'x';
+    }
+  },
+
+  /**
+   * Adjust subtitle time offset. Negative = subtitles appear earlier.
+   * Step: 50ms per click. Range: -500ms to +500ms.
+   */
+  async _adjustOffset(delta) {
+    const result = await chrome.storage.local.get(CT.STORAGE_YT_SUB_OFFSET);
+    let offset = result[CT.STORAGE_YT_SUB_OFFSET] || 0;
+    offset = Math.round(offset + delta);
+    offset = Math.max(-500, Math.min(500, offset));
+
+    await chrome.storage.local.set({ [CT.STORAGE_YT_SUB_OFFSET]: offset });
+
+    if (this._dropdown) {
+      const offsetValue = this._dropdown.querySelector('.ct-yt-offset-value');
+      if (offsetValue) offsetValue.textContent = offset + 'ms';
     }
   },
 
