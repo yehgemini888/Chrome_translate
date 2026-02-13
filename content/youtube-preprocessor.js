@@ -4,9 +4,9 @@
 
 const CTYouTubePreprocessor = {
   // ─── Configuration ─────────────────────────────────────
-  PAUSE_THRESHOLD: 400,       // ms gap to trigger sentence break
-  MAX_SENTENCE_CHARS: 200,    // max chars before forced break
-  MAX_FRAGMENTS: 30,          // max fragments before forced break
+  PAUSE_THRESHOLD: 300,       // ms gap to trigger sentence break
+  MAX_SENTENCE_CHARS: 80,     // max chars before forced break (~1-2 subtitle lines)
+  MAX_FRAGMENTS: 12,          // max fragments before forced break
 
   // CJK character ranges (Chinese, Japanese, Korean — no space joining)
   _CJK_RANGE: /[\u4E00-\u9FFF\u3400-\u4DBF\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF\uFF00-\uFFEF]/,

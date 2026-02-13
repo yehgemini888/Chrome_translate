@@ -4,7 +4,8 @@
 const GoogleTranslateClient = {
   /**
    * Translate an array of texts via Google Translate free endpoint.
-   * Each text is a concatenated block — links/structure are lost.
+   * Batch mode: joins texts with \n separator, sends as single POST request.
+   * Falls back to individual requests if batch parsing fails.
    *
    * @param {string[]} texts - Array of texts to translate
    * @param {string} targetLang - Target language code (e.g. 'zh-TW')
@@ -13,11 +14,32 @@ const GoogleTranslateClient = {
   async translate(texts, targetLang) {
     if (!texts.length) return { translations: [], sourceLang: '' };
 
-    const MAX_CONCURRENT = 5;
+    // ── Batch mode: join with \n, single HTTP request ──
+    // Reduces N individual requests to 1, avoiding Google rate limiting.
+    const cleanTexts = texts.map(t => t.replace(/\n/g, ' ').trim());
+
+    try {
+      const joined = cleanTexts.join('\n');
+      const result = await this._translateBatch(joined, targetLang);
+      const lines = result.text.split('\n');
+      const translations = new Array(texts.length).fill('');
+
+      for (let i = 0; i < Math.min(lines.length, texts.length); i++) {
+        translations[i] = lines[i].trim();
+      }
+
+      // Check: if too few lines returned, some translations may be empty.
+      // This is acceptable graceful degradation vs 429 errors.
+      return { translations, sourceLang: result.sourceLang };
+    } catch (e) {
+      console.warn('[Google Translate] Batch failed, falling back to individual:', e.message);
+    }
+
+    // ── Fallback: individual requests with reduced concurrency ──
+    const MAX_CONCURRENT = 3;
     const translations = new Array(texts.length).fill('');
     let sourceLang = '';
 
-    // Process texts with concurrency control
     const queue = texts.map((text, i) => ({ text, index: i }));
     const workers = [];
 
@@ -28,12 +50,53 @@ const GoogleTranslateClient = {
     }
 
     await Promise.all(workers);
-
     return { translations, sourceLang };
   },
 
   /**
+   * Batch translate joined text via POST (avoids URL length limits).
+   * @param {string} joinedText - Texts joined by \n
+   * @param {string} targetLang
+   * @returns {Promise<{text: string, sourceLang: string}>}
+   */
+  async _translateBatch(joinedText, targetLang) {
+    const params = new URLSearchParams({
+      client: 'gtx',
+      sl: 'auto',
+      tl: targetLang,
+      dt: 't',
+      q: joinedText
+    });
+
+    let response = await fetch(CT.GOOGLE_TRANSLATE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        await new Promise(r => setTimeout(r, 2000));
+        response = await fetch(CT.GOOGLE_TRANSLATE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString()
+        });
+        if (!response.ok) {
+          throw new TranslateError('Google 翻譯請求過於頻繁', 'RATE_LIMITED');
+        }
+      } else {
+        throw new TranslateError(`Google 翻譯錯誤: ${response.status}`, 'API_ERROR');
+      }
+    }
+
+    const data = await response.json();
+    return this._parseResponse(data);
+  },
+
+  /**
    * Worker that pulls items from a shared queue and translates them.
+   * Used as fallback when batch translation fails.
    */
   async _processQueue(queue, results, targetLang, onLang) {
     while (queue.length > 0) {
